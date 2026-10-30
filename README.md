@@ -11,7 +11,17 @@ Needs `git`, and `gh` authenticated for PRs, issues and cloning.
 
 ## Install
 
-Download both mods into Herdr's mods folder, then check them:
+Paste this to your coding agent:
+
+```
+Read ~/.config/herdr-app/AGENTS.md, then add this mod: https://github.com/phin-tech/herdr-phin-picker
+```
+
+The agent is the installer, since the app has no install command. It reads the
+files, adds both mods and merges the keys, asking before it replaces a key you
+already use.
+
+Or do it by hand. Download both mods into Herdr's mods folder, then check them:
 
 ```sh
 curl -fsSL https://git.phin.tech/api/v1/repos/sam/herdr-phin-picker/archive/main.tar.gz \
