@@ -161,6 +161,16 @@ prompts stay put. Each version is a fixed release, and the Changelog in `RECIPE.
 says what changed and anything you need to do by hand. To have your agent do it,
 paste the install line above.
 
+## Uninstalling
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/phin-tech/herdr-phin-picker/main/uninstall.sh | sh
+```
+
+It asks first, then moves both mods to a backup folder and removes only the keys
+that open them. Your settings and saved prompts stay in
+`~/.config/phin-tech/picker/`, so delete that folder too if you want them gone.
+
 ## Security
 
 Mods aren't reviewed by Herdr, so here's what this one does:
