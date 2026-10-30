@@ -154,6 +154,34 @@ it knows: a PR has `Number`, `Title` and `URL`, while a branch has `Repo`, `Path
 and `Branch`. Anything else renders empty. The picker reads the folder each time,
 so a new file shows up without a reload.
 
+## Updating
+
+Run the installer again. It backs up your old copy, and your settings and saved
+prompts stay put. Each version is a fixed release, and the Changelog in `RECIPE.md`
+says what changed and anything you need to do by hand. To have your agent do it,
+paste the install line above.
+
+## Security
+
+Mods aren't reviewed by Herdr, so here's what this one does:
+
+- It runs `git`, `gh`, `hc` and `herdr-app` as you, using your own GitHub login.
+- It clones repos, makes worktrees and starts your coding agents when you ask.
+- It reaches the network only through `git` and `gh`, and sends nothing anywhere else.
+- It reads inside your home folder, and writes settings only to Herdr's own state.
+
+**Treat a PR as untrusted input.** Its title goes into the agent's prompt, and the
+agent then reads its description and code, all of which a stranger can write,
+including instructions aimed at your agent. Be especially careful with PRs from
+forks, and with prompts that run code, like `fix-ci`. A prompt saying "don't change
+anything" is only a request: use your agent's read-only mode when it matters.
+
+## Issues and contributing
+
+Report problems on [GitHub issues](https://github.com/phin-tech/herdr-phin-picker/issues).
+The GitHub repo is a read-only copy of the Forgejo source at
+[git.phin.tech](https://git.phin.tech/sam/herdr-phin-picker), so pull requests are off.
+
 ## Hacking on it
 
 `AGENTS.md` has how to change and test this, for agents and people alike.
