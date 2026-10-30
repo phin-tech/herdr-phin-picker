@@ -79,11 +79,13 @@ From `herdr`: `spaces`, `panes`, `focused`, `run`, `exec`, `hc`, `home`,
 `herdr-app do`. Programs: `git`, `gh`, `hc`, `herdr-app`, `mkdir`, `env`.
 
 Settings are `~/.config/phin-tech/picker/config.json`, saved prompts are `.md` or
-`.txt` files in `prompts/` beside it, and use scores are shared state
-`phin-picker.recent`. It reaches the network through `git` and `gh` only.
+`.txt` files in `prompts/` beside it, use scores are shared state
+`phin-picker.recent`, and the last project list is `phin-picker.paths`. It reaches the network through `git` and `gh` only.
 
 ## Watch out
 
+- Herdr kills mod code that runs about a second without yielding, and QuickJS is 10
+  to 30 times slower than Node. Keep loops linear on large lists.
 - `exec` stops at 30 seconds, so clones, fetches and `git worktree add` run in a
   core terminal with `hc run --bg`, and `hc wait` in a loop. It carries no
   `herdr.*` labels, so it stays off screen, and `GIT_TERMINAL_PROMPT=0` so it can't
@@ -135,6 +137,14 @@ Otherwise:
 ## Changelog
 
 Newest first. Each version is one that was pushed.
+
+### 0.4.1 (2026-10-30)
+
+- Fixes `tab` freezing on PRs in repos where branches merge into each other. Herdr
+  stops mod code after about a second, which left the popup stuck.
+- `tab` shows what it's doing instead of a blank list.
+- The picker opens instantly from its last list and refreshes behind it, reads your
+  agents and top repos ahead of `tab`, and filters long branch lists faster.
 
 ### 0.4.0 (2026-10-30)
 

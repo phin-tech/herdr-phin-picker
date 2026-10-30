@@ -1,6 +1,11 @@
 // Which pull requests stack on each other. Pure; ported from herdr-phin-util's
 // internal/gh. A layer is { number, title, url, branch, base, fork }.
 
+// Long-lived branches merging into each other make a graph, not a chain, and the
+// paths through one explode. This runs on the app's thread, so it stops early.
+const MAX_CHAINS = 12;
+const MAX_LAYERS = 20;
+
 const layerOf = (pr, fork) => ({ number: pr.number, title: pr.title, url: pr.url, branch: pr.headRefName, base: pr.baseRefName, fork });
 
 export function parseNativeStack(text) {
@@ -36,13 +41,18 @@ export function walkStacks(prs, number) {
     at = parent;
   }
 
-  const up = (pr, visited) => {
+  const chains = [];
+  const up = (pr, chain, visited) => {
     const above = pr.isCrossRepository ? [] : (byBase.get(pr.headRefName) ?? []).filter((p) => !visited.has(p.number));
-    if (!above.length) return [[]];
-    return above.flatMap((p) => up(p, new Set([...visited, p.number])).map((rest) => [p, ...rest]));
+    if (!above.length || chain.length >= MAX_LAYERS) return chains.push(chain);
+    for (const p of above) {
+      if (chains.length >= MAX_CHAINS) return;
+      up(p, [...chain, p], new Set([...visited, p.number]));
+    }
   };
+  up(target, down, seen);
 
-  return up(target, seen).map((rest) => [...down, ...rest].map((p) => layerOf(p, p.isCrossRepository === true)));
+  return chains.map((chain) => chain.map((p) => layerOf(p, p.isCrossRepository === true)));
 }
 
 export function stackName(t, layers) {

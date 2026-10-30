@@ -10,7 +10,7 @@ import { promptsFor } from "./prompts.js";
 import { parse, resolveRef } from "./target.js";
 import { recordUse, scoreAt } from "./recent.js";
 import { configuredAgents, discover, findRepo, isPullRequest, listBranches, loadPrompts, lookupStacks, myOrgs, orgRepos, repoOf, runLong } from "./lookup.js";
-import { actionRows, mergeAgents, hasActions, hasExactBranch, linearBaseRows, newBranchRow, orgCompletions, orgPrefix, orgRow, orgRows, parseOrgQuery, parseQuery, projectRows, promptRows, rank, resolveLink, stackRows, worktreeRows } from "./rows.js";
+import { actionRows, mergeAgents, hasActions, hasExactBranch, linearBaseRows, newBranchRow, orgCompletions, orgPrefix, orgRow, orgRows, parseOrgQuery, parseQuery, projectRows, promptRows, rank, resolveLink, sameList, stackRows, worktreeRows } from "./rows.js";
 import { cloneRepo, openRow } from "./actions.js";
 
 const VISIBLE = 14;
@@ -42,6 +42,9 @@ const MY_ORGS = "@me"; // In the same cache: "@" can't start a GitHub login.
 const orgCache = (org) => shared(ORGS)?.[org.toLowerCase()];
 const rememberOrg = (org, entry) => setShared(ORGS, { ...shared(ORGS), [org.toLowerCase()]: entry });
 
+const PATHS = "phin-picker.paths";
+const PRELOADED_REPOS = 4;
+
 const RECENT = "phin-picker.recent";
 const recent = () => shared(RECENT) ?? {};
 const used = (path) => setShared(RECENT, recordUse(recent(), path, Date.now()));
@@ -62,6 +65,7 @@ export default class Picker extends View {
     cx.timer.after(600, () => this.input.focus());
 
     this.levels = [];
+    this.repoReads = new Map();
     this.rows = [];
     this.at = 0;
     this.steps = null;
@@ -79,16 +83,69 @@ export default class Picker extends View {
           if (spaces().find((s) => s.active)?.machine) throw new Error("this Space is on another machine, and the picker only works here");
           await this.pushRepo(folder, true);
         } else {
+          // Last time's list now, then a fresh scan behind it, so opening is instant.
+          const cached = shared(PATHS);
+          if (cached) {
+            this.showProjects(cached);
+            this.applyFilter(cx);
+          }
           const paths = await discover(io, this.cfg.projects);
-          const rows = projectRows({ spaces: spaces(), panes: panes(), paths, home: io.home, score: scorer() });
-          const orgs = this.cfg.orgs.map((org) => orgRow(org, orgCache(org), Date.now()));
-          this.levels = [{ kind: "projects", all: [...rows, ...orgs], filter: "" }];
+          if (!cached || !sameList(cached, paths)) {
+            setShared(PATHS, paths);
+            this.showProjects(paths);
+            this.refilterKeepingRow(cx);
+          }
+          this.preload();
         }
       } catch (e) {
         this.problem = e.message;
       }
       this.applyFilter(cx);
     });
+  }
+
+  showProjects(paths) {
+    const rows = projectRows({ spaces: spaces(), panes: panes(), paths, home: io.home, score: scorer() });
+    const orgs = this.cfg.orgs.map((org) => orgRow(org, orgCache(org), Date.now()));
+    const all = [...rows, ...orgs];
+    if (this.levels[0]?.kind === "projects") this.levels[0].all = all;
+    else this.levels = [{ kind: "projects", all, filter: "" }];
+  }
+
+  refilterKeepingRow(cx) {
+    if (this.level.kind !== "projects") return;
+    const picked = this.rows[this.at];
+    this.applyFilter(cx);
+    const still = this.rows.findIndex((r) => r.path && r.path === picked?.path);
+    if (still >= 0) this.at = still;
+    cx.notify();
+  }
+
+  // Readied while you look at the list, so tab doesn't wait on the likely picks.
+  // Only local reads: org lists stay behind asking for them.
+  preload() {
+    this.agents();
+    for (const row of this.levels[0].all.filter((r) => r.path).slice(0, PRELOADED_REPOS)) this.readRepo(row.path);
+  }
+
+  agents() {
+    this.agentList ??= (async () => {
+      const known = await knownAgents().catch(() => []);
+      return mergeAgents(known.filter((a) => a.installed), await configuredAgents(io, this.cfg));
+    })();
+    return this.agentList;
+  }
+
+  readRepo(folder) {
+    if (!this.repoReads.has(folder)) {
+      const read = (async () => {
+        const repo = await repoOf(io, folder);
+        return { repo, ...(await listBranches(io, repo)) };
+      })();
+      read.catch(() => this.repoReads.delete(folder)); // Tried again if it's picked.
+      this.repoReads.set(folder, read);
+    }
+    return this.repoReads.get(folder);
   }
 
   async close() {
@@ -103,8 +160,7 @@ export default class Picker extends View {
   }
 
   async pushRepo(folder, root = false) {
-    const repo = await repoOf(io, folder);
-    const { worktrees, branches } = await listBranches(io, repo);
+    const { repo, worktrees, branches } = await this.readRepo(folder);
     const found = worktreeRows({ worktrees, branches, repo, spaces: spaces(), panes: panes(), home: io.home });
     const level = { kind: "branches", repo, found, all: this.ticket ? linearBaseRows(repo, this.ticket, found) : found, filter: "" };
     if (root) this.levels = [level];
@@ -232,8 +288,8 @@ export default class Picker extends View {
     if (row.kind === "org") return this.pushOrg(row.org, cx);
     if (this.level.kind === "actions") {
       if (!row.argv) return;
-      return this.busy(cx, async () => {
-        const prompts = promptsFor(row.row, await loadPrompts(io));
+      return this.busy(cx, async (ctx) => {
+        const prompts = promptsFor(row.row, await ctx.step("Loading prompts", () => loadPrompts(io)));
         this.levels.push({ kind: "prompts", name: row.label, repo: this.level.repo, all: promptRows(row, prompts), filter: "" });
         this.input.set_value("");
         return false;
@@ -250,8 +306,8 @@ export default class Picker extends View {
     }
     if (["projects", "org"].includes(this.level.kind) && repoRow) {
       if (!row.path) return;
-      return this.busy(cx, async () => {
-        await this.pushRepo(row.path);
+      return this.busy(cx, async (ctx) => {
+        await ctx.step(`Reading ${row.label}`, () => this.pushRepo(row.path));
         this.input.set_value("");
         return false;
       });
@@ -290,12 +346,11 @@ export default class Picker extends View {
   }
 
   pushActions(row, cx) {
-    this.busy(cx, async () => {
-      const agents = await knownAgents().catch(() => []);
-      const installed = mergeAgents(agents.filter((a) => a.installed), await configuredAgents(io, this.cfg));
+    this.busy(cx, async (ctx) => {
+      const installed = await ctx.step("Checking your agents", () => this.agents());
       const choices = installed.length ? installed : [{ name: this.cfg.agent.argv[0], run: this.cfg.agent.argv }];
       const pr = row.kind === "link" && row.target.kind === "github_pr";
-      const stacks = pr ? stackRows(row.target, await lookupStacks(io, row.target)) : [];
+      const stacks = pr ? await ctx.step("Looking for a stack", async () => stackRows(row.target, await lookupStacks(io, row.target))) : [];
       this.levels.push({ kind: "actions", name: row.label, repo: this.level.repo, all: [...actionRows(row, choices), ...stacks], filter: "" });
       this.input.set_value("");
       return false;
@@ -328,6 +383,7 @@ export default class Picker extends View {
     this.busy(cx, async (ctx) => {
       await ctx.step("Fetching origin", () => runLong(io, ["git", "fetch", "--prune", "origin"], { cwd: level.repo.root, onStart: ctx.onJob }));
       this.levels.pop();
+      this.repoReads.delete(level.repo.root);
       await this.pushRepo(level.repo.root, !this.levels.length);
       return false;
     });

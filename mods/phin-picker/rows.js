@@ -22,7 +22,8 @@ export function subsequence(query, text) {
 export function rank(query, rows) {
   const q = query.toLowerCase();
   const name = rows.filter((r) => subsequence(q, r.label.toLowerCase()));
-  const detail = rows.filter((r) => !name.includes(r) && subsequence(q, (r.detail ?? "").toLowerCase()));
+  const named = new Set(name);
+  const detail = rows.filter((r) => !named.has(r) && subsequence(q, (r.detail ?? "").toLowerCase()));
   return [...name, ...detail];
 }
 
@@ -53,6 +54,8 @@ export function projectRows({ spaces, panes, paths, home, score = () => 0 }) {
   for (const path of free) rows.push({ kind: "project", label: basename(path), path, detail: shortenHome(path, home) });
   return rows;
 }
+
+export const sameList = (a, b) => a.length === b.length && a.every((item, i) => item === b[i]);
 
 export function parseWorktrees(text) {
   const out = [];
@@ -137,8 +140,11 @@ export const hasExactBranch = (rows, name) => rows.some((r) => r.branch === name
 export function linearBaseRows(repo, ticket, rows) {
   const branch = branchFor(ticket);
   const out = [];
+  const seen = new Set();
   const add = (base, detail) => {
-    if (base && !out.some((r) => r.base === base)) out.push({ kind: "linear_base", label: `from ${base}`, base, branch, path: repo.root, target: ticket, detail });
+    if (!base || seen.has(base)) return;
+    seen.add(base);
+    out.push({ kind: "linear_base", label: `from ${base}`, base, branch, path: repo.root, target: ticket, detail });
   };
   if (repo.defaultBranch) add(`origin/${repo.defaultBranch}`, "default branch");
   for (const r of rows) {

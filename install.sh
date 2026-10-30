@@ -15,8 +15,8 @@
 
 set -eu
 
-VERSION=0.4.0
-SHA256=16a5a3ca48982d48cd214febc10c508ad2e2eaa57146a72ecdc556bdf4dd9f46
+VERSION=0.4.1
+SHA256=f61f27bd17de546264aa58f40f3aafaac7021e0ef69c17f6b1b4cd7664a037ec
 REPO_URL=https://github.com/phin-tech/herdr-phin-picker
 TARBALL=$REPO_URL/releases/download/v$VERSION/herdr-phin-picker-$VERSION.tar.gz
 MOD_NAMES="phin-picker phin-worktrees"

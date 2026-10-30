@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { actionRows, hasActions, mergeAgents, orgCompletions, orgPrefix, orgRow, orgRows, parseOrgQuery, promptRows, stackRows, hasExactBranch, linearBaseRows, newBranchRow, parseBranches, parseQuery, parseWorktrees, projectRows, rank, resolveLink, spaceLabel, subsequence, worktreeRows } from "../mods/phin-picker/rows.js";
+import { actionRows, hasActions, sameList, mergeAgents, orgCompletions, orgPrefix, orgRow, orgRows, parseOrgQuery, promptRows, stackRows, hasExactBranch, linearBaseRows, newBranchRow, parseBranches, parseQuery, parseWorktrees, projectRows, rank, resolveLink, spaceLabel, subsequence, worktreeRows } from "../mods/phin-picker/rows.js";
 import { parse } from "../mods/phin-picker/target.js";
 
 const home = "/home/s";
@@ -175,6 +175,12 @@ test("a configured agent joins the list, and replaces the same program", () => {
   const known = [{ name: "Claude Code", run: ["claude"] }, { name: "Pi", run: ["pi"] }];
   const merged = mergeAgents(known, [{ name: "omp", run: ["/x/omp"] }, { name: "my claude", run: ["/y/claude", "--flag"] }]);
   assert.deepEqual(merged.map((a) => a.name), ["Pi", "omp", "my claude"]);
+});
+
+test("sameList compares in order", () => {
+  assert.ok(sameList(["a", "b"], ["a", "b"]));
+  assert.ok(!sameList(["a", "b"], ["b", "a"]));
+  assert.ok(!sameList(["a"], ["a", "b"]));
 });
 
 test("Space label for a worktree", () => {

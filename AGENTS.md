@@ -84,6 +84,10 @@ argument.
 - **Imports stop at the mod's folder.** That's why `phin-worktrees` only opens
   `phin-picker` with props, and why a probe needs copies of the modules.
 - **`mod.open` takes no props.** A key can't choose a starting level.
+- **Mod code that runs about 1.2 seconds without yielding gets killed.** The error
+  is `interrupted`, `try` can't catch it, and the popup just sits there, which reads
+  as a freeze. QuickJS also runs 10 to 30 times slower than Node, so a benchmark in
+  Node flatters you. Keep loops linear, measure in a mod, and yield with `await`.
 - **`exec` stops at 30 seconds.** Clones, fetches and `git worktree add` go through
   `runLong`, which uses a core terminal with no `herdr.*` labels so it stays off
   screen, with a 15 minute limit and credential prompts turned off.

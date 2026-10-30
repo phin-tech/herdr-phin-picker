@@ -21,14 +21,12 @@ async function childDirs(io, path) {
   } catch {
     return [];
   }
-  const out = [];
-  for (const e of entries) {
-    if (e.name.startsWith(".")) continue;
+  const checked = await Promise.all(entries.filter((e) => !e.name.startsWith(".")).map(async (e) => {
     const child = `${path.replace(/\/$/, "")}/${e.name}`;
     // A Dirent doesn't follow symlinks; a symlinked checkout still counts.
-    if (e.isDirectory() || (await io.exists(`${child}/.`))) out.push(child);
-  }
-  return out;
+    return e.isDirectory() || (await io.exists(`${child}/.`)) ? child : null;
+  }));
+  return checked.filter(Boolean);
 }
 
 async function expandRoot(io, root) {
@@ -73,17 +71,16 @@ async function walkForGit(io, path, level, depth, seen) {
     seen.add(path);
     return;
   }
-  for (const child of await childDirs(io, path)) await walkForGit(io, child, level + 1, depth, seen);
+  await Promise.all((await childDirs(io, path)).map((child) => walkForGit(io, child, level + 1, depth, seen)));
 }
 
 export async function discover(io, projects) {
   const seen = new Set();
   for (const root of projects.roots) {
     for (const base of await expandRoot(io, root)) {
-      for (const child of await childDirs(io, base)) {
-        if (projects.git_only) await walkForGit(io, child, 1, projects.depth, seen);
-        else seen.add(child);
-      }
+      const children = await childDirs(io, base);
+      if (projects.git_only) await Promise.all(children.map((child) => walkForGit(io, child, 1, projects.depth, seen)));
+      else children.forEach((child) => seen.add(child));
     }
   }
   return [...seen].sort();

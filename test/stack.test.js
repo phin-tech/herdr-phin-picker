@@ -35,6 +35,17 @@ test("a fork's branch doesn't parent what's based on the same name here", () => 
   assert.equal(walkStacks(prs, 1)[0][0].fork, true);
 });
 
+test("branches merging into each other can't freeze it", () => {
+  const names = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"];
+  const prs = [];
+  for (const head of names) for (const base of names) if (head !== base) prs.push(pr(prs.length + 1, head, base));
+  const start = Date.now();
+  const chains = walkStacks(prs, 1);
+  assert.ok(Date.now() - start < 1000, "took too long");
+  assert.ok(chains.length <= 12);
+  assert.ok(chains.every((c) => c.length <= 21 && c.some((l) => l.number === 1)));
+});
+
 test("layers keep what opening one needs", () => {
   assert.deepEqual(walkStacks(three, 102)[0][1], { number: 101, title: "t101", url: "u101", branch: "b", base: "a", fork: false });
 });
