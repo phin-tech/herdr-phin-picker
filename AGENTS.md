@@ -60,8 +60,9 @@ push to Forgejo only. A release is the person's decision.
 3. Build the asset from the tag, so it can't contain `install.sh`:
    `git archive --format=tar --prefix=herdr-phin-picker-<version>/ v<version> mods keys.json | gzip -9n`.
 4. `gh release create v<version> <asset> --repo phin-tech/herdr-phin-picker --verify-tag`.
-5. Set `VERSION` and `SHA256` in `install.sh`, commit, and push. Done when
-   `install.sh` installs that version from a clean `HERDR_APP_HOME`.
+5. Set `VERSION` and `SHA256` in `install.sh`, and test it from a clean
+   `HERDR_APP_HOME` before committing. A new asset can 404 for a minute or so.
+6. Commit and push. Done when the installer on GitHub installs that version.
 
 Releases are immutable and a ruleset blocks moving or deleting `v*` tags on GitHub,
 so a published version can't be fixed in place: release a new one.
