@@ -15,8 +15,8 @@ commands it uses:
   `herdr-app do space.new --name "repo#N" --folder <worktree> --argv '["claude"]' --task "<prompt>"`.
 - Worktrees belong at `worktrees.path` from the config (default
   `~/.herdr/worktrees/{repo}/{branch}`), so the picker finds them later.
-- Name a PR or issue Space `repo#N` and a ticket Space by its key. That name is
-  how the picker recognises it as already open.
+- Name a PR or issue Space `repo#N`, a ticket Space by its key, and a stack Space
+  `repo#first-last`. That name is how the picker recognises it as already open.
 
 ## Configuring it for someone
 
@@ -57,24 +57,31 @@ argument.
 
 ### What the app won't let you do
 
+- **`run()` answers nothing.** Use `command` (`herdr-app do`) when a later step needs
+  an id, as a stack's tabs need their Space.
+
 - **Imports stop at the mod's folder.** That's why `phin-worktrees` only opens
   `phin-picker` with props, and why a probe needs copies of the modules.
 - **`mod.open` takes no props.** A key can't choose a starting level.
 - **`exec` stops at 30 seconds.** Clones, fetches and `git worktree add` go through
   `runLong`, which uses a core terminal with no `herdr.*` labels so it stays off
-  screen.
+  screen, with a 15 minute limit and credential prompts turned off.
 - **`fs/promises` reads inside home only.** Glob walks start at the deepest literal
   folder. `readdir` Dirents don't follow symlinks, so `childDirs` checks `<path>/.`.
 - **The text box takes `ctrl+a`,** and likely other editing keys. Offer choices as
   rows, on the tab levels, rather than as ctrl chords.
+- **`task` is a plain argument,** so a leading `-` would read as a flag.
 - **`hc keys` can't type `#`,** so prompts can't be typed and left unsent. `task` is
   the only way in, and it submits.
 
 ### Known gaps
 
-- Reopening a PR whose worktree exists fetches the branch but leaves the worktree
-  where it was, so it can be behind the PR.
-- PRs from forks fail at the fetch, which only reads `origin`.
+- Reopening a PR only fast-forwards. A worktree with local commits or uncommitted
+  changes stays put, and the toast and the agent's prompt both say so.
+- A plain open uses `run()`, so a `space.new` that fails after the work is done
+  shows only the app's own error.
+- A stack that's already open is updated and shown, so a layer added since then
+  gets no tab until the Space is closed and reopened.
 - `findRepo` looks only at `repos.templates`. A checkout filed under a different
   owner is listed by discovery, but its links won't find it.
 - `[[sources]]`, setups, promote and handoff are still only in herdr-phin-util.

@@ -1,7 +1,7 @@
 // The picker's rows and the rules behind them. Pure, so Node can test it.
 // A checkout with a Space never appears twice: you get the Space.
 
-import { labelFor, branchFor, parse, parseRepoShorthand } from "./target.js";
+import { labelFor, branchFor, parse, parseRef, parseRepoShorthand } from "./target.js";
 
 const basename = (p) => p.replace(/\/+$/, "").split("/").pop();
 
@@ -38,7 +38,7 @@ export function spaceFolders(spaces, panes) {
   return out;
 }
 
-export function projectRows({ spaces, panes, paths, home }) {
+export function projectRows({ spaces, panes, paths, home, score = () => 0 }) {
   const folders = spaceFolders(spaces, panes);
   const occupied = new Set(folders.values());
   const rows = spaces.map((s) => {
@@ -47,10 +47,9 @@ export function projectRows({ spaces, panes, paths, home }) {
     return { kind: "space", label: s.name, path, spaceId: s.id, focused: s.active, detail: s.active ? `current · ${where}` : where };
   });
   // The Space you're in is the least useful one to switch to.
-  rows.sort((a, b) => a.focused - b.focused);
-  for (const path of paths) {
-    if (!occupied.has(path)) rows.push({ kind: "project", label: basename(path), path, detail: shortenHome(path, home) });
-  }
+  rows.sort((a, b) => a.focused - b.focused || score(b.path) - score(a.path));
+  const free = paths.filter((p) => !occupied.has(p)).sort((a, b) => score(b) - score(a));
+  for (const path of free) rows.push({ kind: "project", label: basename(path), path, detail: shortenHome(path, home) });
   return rows;
 }
 
@@ -158,13 +157,20 @@ export function actionRows(row, agents) {
   ];
 }
 
+export function stackRows(target, paths) {
+  return paths.filter((layers) => layers.length > 1).map((layers) => ({
+    kind: "stack", label: `Whole stack of ${layers.length}`, target, layers,
+    detail: layers.map((l) => `#${l.number}`).join(" → "),
+  }));
+}
+
 export function promptRows(action, prompts) {
   return prompts.map((p) => ({ kind: "prompt", label: p.name, row: action.row, argv: action.argv, text: p.text, detail: p.text.split("\n")[0] }));
 }
 
 export function parseQuery(query, atProjects) {
   const t = parse(query);
-  return t.kind === "plain" && atProjects ? (parseRepoShorthand(query) ?? t) : t;
+  return t.kind === "plain" && atProjects ? (parseRef(query) ?? parseRepoShorthand(query) ?? t) : t;
 }
 
 function linkDetail(t) {
@@ -175,14 +181,21 @@ function linkDetail(t) {
 
 const findSpace = (spaces, label) => spaces.find((s) => s.name.toLowerCase() === label.toLowerCase());
 
+// A repo's name isn't unique across owners, so a repo link matches by folder.
+function spaceOn(spaces, panes, path) {
+  if (!path) return undefined;
+  const folders = spaceFolders(spaces, panes);
+  return spaces.find((s) => folders.get(s.id) === path);
+}
+
 // The one row a pasted reference means, or null for text that's just a filter.
 // Matches an open Space by its name alone, so it costs no network. Renaming the
 // Space defeats that, and opening finds the existing worktree instead.
 // `repo` is what the caller found on disk for a github_repo target.
-export function resolveLink(spaces, t, repo, home) {
+export function resolveLink(spaces, t, repo, home, panes = []) {
   if (t.kind === "plain") return null;
   const label = labelFor(t);
-  const open = findSpace(spaces, label);
+  const open = t.kind === "github_repo" ? spaceOn(spaces, panes, repo?.path) : findSpace(spaces, label);
   if (open) return { kind: "space", label, spaceId: open.id, focused: open.active, detail: "already open — switch to it" };
   if (t.kind !== "github_repo") return { kind: "link", label, branch: branchFor(t), detail: linkDetail(t), target: t };
   if (repo?.path) return { kind: "project", label, path: repo.path, detail: `already cloned — ${shortenHome(repo.path, home)}` };

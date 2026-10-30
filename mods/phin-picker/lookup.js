@@ -2,9 +2,10 @@
 // world arrives in `io`, so Node can test this against real repositories:
 // { exec(cmd, args, opts), hc(args), readdir(path), readText(path), exists(path), home }.
 
-import { PROMPTS_PATH, expandHome, repoCandidates } from "./config.js";
+import { MAX_DEPTH, PROMPTS_PATH, expandHome, repoCandidates } from "./config.js";
 import { DEFAULT_PROMPTS } from "./prompts.js";
 import { parseBranches, parseWorktrees } from "./rows.js";
+import { parseNativeStack, walkStacks } from "./stack.js";
 
 const hasMeta = (s) => /[*?[]/.test(s);
 
@@ -45,10 +46,11 @@ async function expandRoot(io, root) {
     const next = [];
     for (const dir of current) {
       if (segment === "**") {
-        for (const stack = [dir]; stack.length; ) {
-          const at = stack.pop();
+        // Capped because childDirs follows symlinks, and one can point back up.
+        for (const stack = [[dir, 0]]; stack.length; ) {
+          const [at, depth] = stack.pop();
           next.push(at);
-          stack.push(...(await childDirs(io, at)));
+          if (depth < MAX_DEPTH) for (const c of await childDirs(io, at)) stack.push([c, depth + 1]);
         }
       } else if (hasMeta(segment)) {
         const re = globRegex(segment);
@@ -99,7 +101,7 @@ export async function loadPrompts(io) {
   }
   const prompts = [];
   for (const name of entries.map((e) => e.name).filter((n) => /\.(md|txt)$/.test(n) && !n.startsWith(".")).sort()) {
-    const text = (await io.readText(`${dir}/${name}`))?.trim();
+    const text = (await io.readText(`${dir}/${name}`).catch(() => null))?.trim();
     if (text) prompts.push({ name: name.replace(/\.[^.]+$/, ""), text });
   }
   const yours = new Set(prompts.map((p) => p.name));
@@ -145,10 +147,16 @@ export async function listBranches(io, repo) {
 }
 
 export async function lookupPR(io, t) {
-  const r = await io.exec("gh", ["pr", "view", String(t.number), "--repo", `${t.owner}/${t.repo}`, "--json", "headRefName,title"]);
+  const r = await io.exec("gh", ["pr", "view", String(t.number), "--repo", `${t.owner}/${t.repo}`, "--json", "headRefName,title,isCrossRepository"]);
   if (r.code !== 0) throw new Error(`gh pr view ${t.owner}/${t.repo}#${t.number}: ${r.stderr.trim()}`);
   const pr = JSON.parse(r.stdout);
-  return { branch: pr.headRefName, title: pr.title };
+  return { branch: pr.headRefName, title: pr.title, fork: pr.isCrossRepository === true };
+}
+
+export async function isPullRequest(io, t) {
+  const r = await io.exec("gh", ["api", `repos/${t.owner}/${t.repo}/issues/${t.number}`]);
+  if (r.code !== 0) throw new Error(`${t.text}: ${r.stderr.trim() || "not found"}`);
+  return JSON.parse(r.stdout).pull_request !== undefined;
 }
 
 // Only a nicety: without a title the branch is just issue-99.
@@ -161,26 +169,81 @@ export async function lookupIssueTitle(io, t) {
   }
 }
 
+// GitHub's own stack, as gh stack makes them. Null for a stack built any other
+// way, so it's only the first answer, never the only one.
+const STACK_QUERY = `query($owner: String!, $repo: String!, $number: Int!) {
+  repository(owner: $owner, name: $repo) { pullRequest(number: $number) { stack { entries(first: 50) { nodes {
+    position pullRequest { number title url headRefName baseRefName headRefOid }
+  } } } } }
+}`;
+
+// Every chain of open PRs this one belongs to, each bottom-first. Answers with
+// no chains rather than failing: a stack is an extra, and the PR still opens.
+export async function lookupStacks(io, t) {
+  const ask = ["api", "graphql", "-f", `query=${STACK_QUERY}`, "-F", `owner=${t.owner}`, "-F", `repo=${t.repo}`, "-F", `number=${t.number}`];
+  try {
+    const native = await io.exec("gh", ask);
+    const layers = native.code === 0 ? parseNativeStack(native.stdout) : null;
+    if (layers) return [layers];
+    const r = await io.exec("gh", ["pr", "list", "--repo", `${t.owner}/${t.repo}`, "--state", "open", "--limit", "200", "--json", "number,title,url,headRefName,baseRefName,isCrossRepository"]);
+    return r.code === 0 ? walkStacks(JSON.parse(r.stdout), t.number) : [];
+  } catch {
+    return [];
+  }
+}
+
+const LONG_LIMIT_MS = 15 * 60 * 1000;
+
 // exec stops at 30 s, too short for a clone or a fetch, so slow work runs in a
 // core terminal. Herdr's screens don't show it: it carries no herdr.* labels.
 export async function runLong(io, argv, { cwd, onStart } = {}) {
   const args = ["run", "--bg", "--json", "--no-parent", "--no-notify"];
   if (cwd) args.push("--cwd", cwd);
-  const started = await io.hc([...args, "--", ...argv]);
+  // A prompt for credentials would wait forever in a terminal nobody can see.
+  const started = await io.hc([...args, "--", "env", "GIT_TERMINAL_PROMPT=0", ...argv]);
   if (started.code !== 0) throw new Error(`${argv[0]}: ${started.stderr.trim() || started.stdout.trim()}`);
   const { address } = JSON.parse(started.stdout);
   onStart?.(address);
 
   let result;
-  do {
-    result = JSON.parse((await io.hc(["wait", address, "--json", "--timeout", "20"])).stdout);
-  } while (!result.ended);
+  let tail = "";
+  try {
+    const deadline = Date.now() + LONG_LIMIT_MS;
+    do {
+      if (Date.now() > deadline) {
+        await io.hc(["kill", address]);
+        throw new Error(`${argv.slice(0, 3).join(" ")} timed out after ${LONG_LIMIT_MS / 60000} minutes`);
+      }
+      const waited = await io.hc(["wait", address, "--json", "--timeout", "20"]);
+      try {
+        result = JSON.parse(waited.stdout);
+      } catch {
+        throw new Error(`lost track of ${argv[0]}: ${waited.stderr.trim() || waited.stdout.trim() || "hc wait gave nothing"}`);
+      }
+    } while (!result.ended);
+    tail = (await io.hc(["read", address, "--lines", "12"])).stdout.trim().split("\n").slice(-6).join("\n");
+  } finally {
+    await io.hc(["rm", address]);
+    onStart?.(null);
+  }
+  if (result.exit_code !== 0) throw new Error(`${argv.slice(0, 3).join(" ")} failed (${result.exit_code ?? result.reason})\n${tail}`);
+}
 
-  const output = await io.hc(["read", address, "--lines", "12"]);
-  await io.hc(["rm", address]);
-  onStart?.(null);
-  if (result.exit_code !== 0) {
-    const tail = output.stdout.trim().split("\n").slice(-6).join("\n");
-    throw new Error(`${argv.slice(0, 3).join(" ")} failed (${result.exit_code ?? result.reason})\n${tail}`);
+// Brings a reused worktree up to its fetched branch. Only ever a fast-forward:
+// local work stays, and the answer says why the worktree is still behind.
+export async function syncWorktree(io, folder, remoteRef, { onStart } = {}) {
+  const counts = await quiet(io, folder, ["rev-list", "--left-right", "--count", `HEAD...${remoteRef}`]);
+  const [ahead, behind] = counts.stdout.trim().split(/\s+/).map(Number);
+  if (counts.code !== 0) return `couldn't compare it with ${remoteRef}`;
+  if (!behind) return null;
+  const commits = `${behind} commit${behind === 1 ? "" : "s"} behind ${remoteRef}`;
+  if (ahead) return `${commits} with ${ahead} local, so it was left alone`;
+  const dirty = await quiet(io, folder, ["status", "--porcelain", "--untracked-files=no"]);
+  if (dirty.code !== 0 || dirty.stdout.trim()) return `${commits} with uncommitted changes, so it was left alone`;
+  try {
+    await runLong(io, ["git", "merge", "--ff-only", remoteRef], { cwd: folder, onStart });
+    return null;
+  } catch {
+    return `${commits}: the fast-forward failed, so it was left alone`;
   }
 }

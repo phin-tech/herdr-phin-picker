@@ -8,14 +8,21 @@ const sshRepo = /^git@github\.com:([^/]+)\/([^/]+?)(?:\.git)?\/?$/;
 // Strict on purpose: "codex/iterm-split" is a branch far more often than a repo,
 // so this only runs at the project level.
 const shorthandRepo = /^([A-Za-z0-9][A-Za-z0-9-]*)\/([A-Za-z0-9][A-Za-z0-9._-]*)$/;
+// owner/repo#42. GitHub numbers issues and PRs together, so only it can say which.
+const shorthandRef = /^([A-Za-z0-9][A-Za-z0-9-]*)\/([A-Za-z0-9][A-Za-z0-9._-]*)#(\d+)$/;
 const linearPath = /^\/[^/]+\/issue\/([A-Za-z][A-Za-z0-9]*-\d+)(?:\/([^/?#]*))?/;
 const urlParts = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/([^/?#]*)([^?#]*)/;
 
+// "." and ".." would walk the checkout path out of its template.
+const unsafeName = (s) => /^\.+$/.test(s);
+
 function repoTarget(text, owner, repo) {
+  if (unsafeName(owner) || unsafeName(repo)) return { kind: "plain", text };
   return { kind: "github_repo", url: text, text, host: "github.com", owner, repo };
 }
 
 function ghTarget(kind, text, m) {
+  if (unsafeName(m[1]) || unsafeName(m[2])) return { kind: "plain", text };
   return { kind, url: text, text, host: "github.com", owner: m[1], repo: m[2], number: Number(m[3]) };
 }
 
@@ -27,9 +34,9 @@ export function parse(input) {
   const ssh = text.match(sshRepo);
   if (ssh) return repoTarget(text, ssh[1], ssh[2]);
 
-  const url = text.match(urlParts);
+  const url = (/^(www\.)?(github\.com|linear\.app)\//i.test(text) ? `https://${text}` : text).match(urlParts);
   if (!url) return plain;
-  const host = url[1].toLowerCase().replace(/^www\./, "");
+  const host = url[1].toLowerCase().replace(/^.*@/, "").replace(/^www\./, "");
   const path = url[2];
 
   if (host === "github.com") {
@@ -55,6 +62,18 @@ export function parseRepoShorthand(input) {
   return m ? repoTarget(text, m[1], m[2]) : null;
 }
 
+export function parseRef(input) {
+  const text = input.trim();
+  const m = text.match(shorthandRef);
+  if (!m || unsafeName(m[2])) return null;
+  return { kind: "github_ref", text, host: "github.com", owner: m[1], repo: m[2], number: Number(m[3]) };
+}
+
+// What a ref turned out to be, as the URL it would have been pasted as.
+export function resolveRef(t, isPR) {
+  return parse(`https://github.com/${t.owner}/${t.repo}/${isPR ? "pull" : "issues"}/${t.number}`);
+}
+
 export function sanitize(s) {
   let out = s.trim().toLowerCase().replace(/[^a-z0-9._/-]+/g, "-");
   out = out.replace(/^[-./]+|[-./]+$/g, "").replaceAll("..", "-");
@@ -73,7 +92,7 @@ export function branchFor(t) {
 }
 
 export function labelFor(t) {
-  if (t.kind === "github_pr" || t.kind === "github_issue") return `${t.repo}#${t.number}`;
+  if (t.kind === "github_pr" || t.kind === "github_issue" || t.kind === "github_ref") return `${t.repo}#${t.number}`;
   if (t.kind === "linear") return t.issue;
   if (t.kind === "github_repo") return t.repo;
   return t.text;

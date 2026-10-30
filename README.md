@@ -5,18 +5,31 @@ Get to a repo, a branch, a PR or a Linear ticket in one keystroke, in the
 in [herdr-phin-util](https://github.com/phin-tech/herdr-phin-util), which stays
 the plugin for terminal Herdr.
 
+![Phin Picker](preview.png)
+
 Needs `git`, and `gh` authenticated for PRs, issues and cloning.
 
 ## Install
 
-Link or copy both mod folders, then merge `keys.json` into
-`~/.config/herdr-app/keys.json`:
+Download both mods into Herdr's mods folder, then check them:
 
 ```sh
-ln -s "$PWD/mods/phin-picker" "$PWD/mods/phin-worktrees" ~/.config/herdr-app/mods/
+curl -fsSL https://git.phin.tech/api/v1/repos/sam/herdr-phin-picker/archive/main.tar.gz \
+  | tar -xz -C ~/.config/herdr-app/mods --strip-components=2 herdr-phin-picker/mods
 herdr-app check ~/.config/herdr-app/mods/phin-picker
 herdr-app check ~/.config/herdr-app/mods/phin-worktrees
 ```
+
+Run it again to update. Then add these to `global` in
+`~/.config/herdr-app/keys.json`, after checking the keys are free:
+
+```json
+"cmd-o": "mod.open:phin-picker",
+"cmd-shift-o": "mod.open:phin-worktrees"
+```
+
+To work on it, clone the repo and symlink the two folders from `mods/` in instead.
+Don't run the `curl` line over symlinks: it writes through them into your clone.
 
 | Key | Does |
 | --- | --- |
@@ -25,8 +38,8 @@ herdr-app check ~/.config/herdr-app/mods/phin-worktrees
 
 ## Using it
 
-Open Spaces come first, then checkouts on disk. A checkout with a Space never
-appears twice.
+Open Spaces come first, then checkouts on disk, each with the repos you use most
+and most recently at the top. A checkout with a Space never appears twice.
 
 | Key | Does |
 | --- | --- |
@@ -40,10 +53,20 @@ Paste into the box instead of filtering:
 
 | Pasted | You get |
 | --- | --- |
-| GitHub PR URL | a worktree Space on the PR's branch |
+| GitHub PR URL | a worktree Space on the PR's branch, `pr-N` for a fork |
 | GitHub issue URL | a worktree Space on a branch named from the title |
 | Linear URL | pick a repository, then a base, for the ticket's branch |
+| `owner/repo#42` | the same as pasting that PR or issue |
 | `owner/repo` or a repo URL | clone it, or open it if you have it |
+
+A PR or issue link for a repo you don't have clones it first. From a PR row, `tab`
+offers the whole stack, when there is one: one Space with a tab per layer, focused
+on the PR you pasted. It finds stacks made with `gh stack`, which it doesn't need
+installed, and ones built with plain git. Where a stack forks, each chain gets its
+own row.
+
+Reopening a PR fast-forwards its worktree. If it has local commits or uncommitted
+changes it's left alone, and a toast and the agent's prompt both say it's behind.
 
 Type a name that matches no branch and you get a row that creates it, based on
 the default branch.

@@ -3,29 +3,49 @@
 
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { exec, hc, home, knownAgents, panes, spaces, focused, props, closeOverlay, readTextFile, run, theme } from "herdr";
+import { exec, hc, home, knownAgents, notify, panes, spaces, focused, props, closeOverlay, readTextFile, run, setShared, shared, theme } from "herdr";
 import { exists, readdir } from "fs/promises";
 import { CONFIG_PATH, parseConfig } from "./config.js";
 import { promptsFor } from "./prompts.js";
-import { parse } from "./target.js";
-import { discover, findRepo, listBranches, loadPrompts, repoOf, runLong } from "./lookup.js";
-import { actionRows, hasActions, hasExactBranch, linearBaseRows, newBranchRow, parseQuery, projectRows, promptRows, rank, resolveLink, worktreeRows } from "./rows.js";
+import { parse, resolveRef } from "./target.js";
+import { recordUse, scoreAt } from "./recent.js";
+import { discover, findRepo, isPullRequest, listBranches, loadPrompts, lookupStacks, repoOf, runLong } from "./lookup.js";
+import { actionRows, hasActions, hasExactBranch, linearBaseRows, newBranchRow, parseQuery, projectRows, promptRows, rank, resolveLink, stackRows, worktreeRows } from "./rows.js";
 import { cloneRepo, openRow } from "./actions.js";
 
 const VISIBLE = 14;
 const BADGES = {
   space: "open", project: "new", clone: "clone", link: "link", worktree: "tree",
-  branch: "local", remote_branch: "remote", new_branch: "create", linear_base: "base", prunable: "gone", action: "do", prompt: "prompt",
+  branch: "local", remote_branch: "remote", new_branch: "create", linear_base: "base", prunable: "gone", action: "do", prompt: "prompt", stack: "stack",
 };
 
 const io = {
   exec,
   hc,
-  exists,
+  // Throws outside home, where a mod can't read: to the picker that's just absent.
+  exists: (path) => exists(path).catch(() => false),
   readText: readTextFile,
   home: home(),
   readdir: (path) => readdir(path, { withFileTypes: true }),
 };
+
+// `run`, but it answers: a stack's tabs need the Space the first command made.
+async function command(name, args) {
+  const r = await exec("herdr-app", ["do", name, JSON.stringify(args)]);
+  const out = JSON.parse(r.stdout || "{}");
+  if (r.code !== 0 || out.error) throw new Error(`${name}: ${out.error ?? r.stderr.trim()}`);
+  return out;
+}
+
+const RECENT = "phin-picker.recent";
+const recent = () => shared(RECENT) ?? {};
+const used = (path) => setShared(RECENT, recordUse(recent(), path, Date.now()));
+
+function scorer() {
+  const seen = recent();
+  const now = Date.now();
+  return (path) => scoreAt(seen[path], now);
+}
 
 export default class Picker extends View {
   init(_props, cx) {
@@ -45,16 +65,17 @@ export default class Picker extends View {
     this.ticket = null;
 
     cx.spawn(async (cx) => {
-      this.cfg = parseConfig(await readTextFile(`${io.home}/${CONFIG_PATH}`));
+      this.cfg = parseConfig(await readTextFile(`${io.home}/${CONFIG_PATH}`).catch(() => null));
       this.problem = this.cfg.problem;
       try {
         if (props().start === "branches") {
           const folder = focused()?.cwd;
           if (!folder) throw new Error("no terminal in focus to take a repository from");
+          if (spaces().find((s) => s.active)?.machine) throw new Error("this Space is on another machine, and the picker only works here");
           await this.pushRepo(folder, true);
         } else {
           const paths = await discover(io, this.cfg.projects);
-          this.levels = [{ kind: "projects", all: projectRows({ spaces: spaces(), panes: panes(), paths, home: io.home }), filter: "" }];
+          this.levels = [{ kind: "projects", all: projectRows({ spaces: spaces(), panes: panes(), paths, home: io.home, score: scorer() }), filter: "" }];
         }
       } catch (e) {
         this.problem = e.message;
@@ -64,7 +85,9 @@ export default class Picker extends View {
   }
 
   async close() {
-    if (this.job) await exec("hc", ["kill", this.job]);
+    const job = this.job;
+    this.job = null;
+    if (job) await exec("hc", ["kill", job]).then(() => exec("hc", ["rm", job])).catch(() => {});
     closeOverlay(props().overlay);
   }
 
@@ -87,12 +110,26 @@ export default class Picker extends View {
     const query = this.input.value().trim();
     level.filter = query;
     this.at = 0;
+    this.problem = this.cfg?.problem ?? null;
     const t = level.kind === "actions" || level.kind === "prompts" ? parse("") : parseQuery(query, level.kind === "projects");
     if (t.kind === "github_repo") {
       this.rows = [];
       cx.spawn(async (cx) => {
-        const row = resolveLink(spaces(), t, await findRepo(io, this.cfg, t), io.home);
+        const row = resolveLink(spaces(), t, await findRepo(io, this.cfg, t), io.home, panes());
         if (this.input.value().trim() === query) this.rows = [row];
+        cx.notify();
+      });
+      return cx.notify();
+    }
+    if (t.kind === "github_ref") {
+      this.rows = [];
+      cx.spawn(async (cx) => {
+        try {
+          const row = resolveLink(spaces(), resolveRef(t, await isPullRequest(io, t)), null, io.home);
+          if (this.input.value().trim() === query) this.rows = [row];
+        } catch (e) {
+          if (this.input.value().trim() === query) this.problem = e.message;
+        }
         cx.notify();
       });
       return cx.notify();
@@ -130,7 +167,8 @@ export default class Picker extends View {
           throw e;
         }
       };
-      const ctx = { io, cfg: this.cfg, run, argv, prompt, step, onJob: (t) => { this.job = t; } };
+      const warn = (title, body) => notify({ title, body, level: "warning" });
+      const ctx = { io, cfg: this.cfg, run, command, spaces, argv, prompt, step, warn, used, onJob: (t) => { this.job = t; } };
       try {
         if (await work(ctx)) return closeOverlay(props().overlay);
         this.steps = null;
@@ -147,12 +185,14 @@ export default class Picker extends View {
     if (!row || this.steps) return;
     // A ticket names no repository, so the next pick is the repository.
     if (row.kind === "link" && row.target.kind === "linear") return this.takeTicket(row, cx);
-    if (this.ticket && this.level.kind === "projects") return this.descend(cx);
+    if (row.kind === "stack" || (this.ticket && this.level.kind === "projects")) return this.descend(cx);
     const defaultAgent = this.cfg.agent.enabled ? this.cfg.agent.argv : null;
     const picked = row.row ?? row;
     const prompt = row.kind === "prompt" ? row.text : row.kind === "action" ? this.input.value().trim() : "";
     this.busy(cx, async (ctx) => {
       await openRow(ctx, picked, this.level.repo);
+      const repoPath = this.level.repo?.root ?? picked.path;
+      if (repoPath) used(repoPath);
       return true;
     }, row.row ? { argv: row.argv, prompt } : { argv: defaultAgent });
   }
@@ -169,6 +209,7 @@ export default class Picker extends View {
     if (!row || this.steps) return;
     if (row.kind === "link" && row.target.kind === "linear") return this.takeTicket(row, cx);
     if (this.level.kind === "prompts") return;
+    if (row.kind === "stack") return this.pushActions(row, cx);
     if (this.level.kind === "actions") {
       if (!row.argv) return;
       return this.busy(cx, async () => {
@@ -195,12 +236,17 @@ export default class Picker extends View {
         return false;
       });
     }
-    if (!hasActions(row)) return;
+    if (hasActions(row)) this.pushActions(row, cx);
+  }
+
+  pushActions(row, cx) {
     this.busy(cx, async () => {
       const agents = await knownAgents().catch(() => []);
       const installed = agents.filter((a) => a.installed);
       const choices = installed.length ? installed : [{ name: this.cfg.agent.argv[0], run: this.cfg.agent.argv }];
-      this.levels.push({ kind: "actions", name: row.label, repo: this.level.repo, all: actionRows(row, choices), filter: "" });
+      const pr = row.kind === "link" && row.target.kind === "github_pr";
+      const stacks = pr ? stackRows(row.target, await lookupStacks(io, row.target)) : [];
+      this.levels.push({ kind: "actions", name: row.label, repo: this.level.repo, all: [...actionRows(row, choices), ...stacks], filter: "" });
       this.input.set_value("");
       return false;
     });
@@ -216,7 +262,10 @@ export default class Picker extends View {
     }
     if (this.levels.length <= 1 && !this.ticket) return this.close();
     if (this.levels.length > 1) this.levels.pop();
-    else this.ticket = null;
+    else {
+      this.ticket = null;
+      if (this.level.kind === "branches") this.level.all = this.level.found;
+    }
     this.input.set_value(this.level.filter);
     this.applyFilter(cx);
   }
@@ -236,7 +285,7 @@ export default class Picker extends View {
     const row = this.rows[this.at];
     const kind = this.level?.kind;
     const repoRow = kind === "projects" && (row?.kind === "clone" || ((row?.kind === "project" || row?.kind === "space") && row.path));
-    const tab = repoRow ? "⇥ branches" : kind === "actions" ? (row?.argv ? "⇥ saved prompts" : null) : row && kind !== "prompts" && hasActions(row) ? "⇥ actions" : null;
+    const tab = repoRow ? "⇥ branches" : row?.kind === "stack" ? "⇥ choose" : kind === "actions" ? (row?.argv ? "⇥ saved prompts" : null) : row && kind !== "prompts" && hasActions(row) ? "⇥ actions" : null;
     const parts = [kind === "actions" ? "↵ do it · type a prompt for the agent" : "↵ open", tab, kind === "branches" ? "⌃R fetch" : null, "esc back"];
     return parts.filter(Boolean).join("   ");
   }

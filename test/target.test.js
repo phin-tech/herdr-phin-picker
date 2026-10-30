@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { branchFor, labelFor, parse, parseRepoShorthand, sanitize } from "../mods/phin-picker/target.js";
+import { branchFor, labelFor, parse, parseRef, parseRepoShorthand, resolveRef, sanitize } from "../mods/phin-picker/target.js";
 
 test("pull request URLs, with anything after the number", () => {
   for (const url of [
@@ -56,6 +56,29 @@ test("Linear", () => {
   assert.equal(branchFor(t), "eng-123-fix-the-flaky-test");
   assert.equal(branchFor(parse("https://linear.app/phin/issue/ENG-123")), "eng-123");
   assert.equal(parse("https://linear.app/phin/issue/eng-7/x").issue, "ENG-7");
+});
+
+test("links pasted without a scheme, and an ssh URL", () => {
+  assert.equal(parse("github.com/a/b/pull/3").kind, "github_pr");
+  assert.equal(parse("www.github.com/a/b/issues/3").kind, "github_issue");
+  assert.equal(parse("linear.app/p/issue/ENG-1/x").kind, "linear");
+  assert.equal(parse("ssh://git@github.com/a/b.git").repo, "b");
+});
+
+test("a dotted owner or repo can't walk out of the checkout path", () => {
+  for (const s of ["https://github.com/../x/pull/1", "https://github.com/a/..", "git@github.com:../x.git", "https://github.com/a/../issues/2"]) {
+    assert.equal(parse(s).kind, "plain", s);
+  }
+});
+
+test("owner/repo#42 waits for GitHub to say what it is", () => {
+  const t = parseRef("  phin-tech/roux#42 ");
+  assert.equal(t.kind, "github_ref");
+  assert.equal(labelFor(t), "roux#42");
+  assert.equal(resolveRef(t, true).kind, "github_pr");
+  assert.equal(resolveRef(t, false).kind, "github_issue");
+  assert.equal(resolveRef(t, true).url, "https://github.com/phin-tech/roux/pull/42");
+  for (const s of ["roux#42", "a/b/c#1", "a/b#x", "a/..#1"]) assert.equal(parseRef(s), null, s);
 });
 
 test("sanitize", () => {

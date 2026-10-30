@@ -1,1 +1,5 @@
 node_modules/
+# Written by the app.
+gpui-kit.d.ts
+herdr.d.ts
+jsconfig.json

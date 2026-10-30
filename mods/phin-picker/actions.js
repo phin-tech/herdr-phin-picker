@@ -1,27 +1,34 @@
 // What picking a row does: focus what exists, create what doesn't.
-// `ctx` is { io, cfg, run, argv, prompt, step, onJob }. `step(label, fn)` reports
-// progress; `argv` is the agent to start, or null for none; `prompt`, when
-// typed, replaces the configured one.
+// `ctx` is { io, cfg, run, command, spaces, argv, prompt, step, warn, onJob, used }.
+// `step(label, fn)` reports progress; `argv` is the agent to start, or null for
+// none; `prompt`, when typed, replaces the configured one. `command` is `run`
+// that answers, for when the next step needs the ids it made. `used` counts a
+// repo towards recent-first.
 
 import { promptData, renderPrompt, worktreePath } from "./config.js";
 import { branchFor, labelFor } from "./target.js";
-import { findRepo, listBranches, lookupIssueTitle, lookupPR, repoOf, runLong } from "./lookup.js";
+import { findRepo, listBranches, lookupIssueTitle, lookupPR, repoOf, runLong, syncWorktree } from "./lookup.js";
 import { spaceLabel } from "./rows.js";
+import { stackName } from "./stack.js";
 
-function openSpace(ctx, { name, folder, kind, data }) {
+function spaceArgs(ctx, { name, folder, kind, data, note }) {
   const args = { folder };
   if (name) args.name = name;
   if (ctx.argv) {
     args.argv = ctx.argv;
     const prompt = renderPrompt(ctx.prompt || ctx.cfg.agent.prompts[kind], data);
-    if (prompt.trim()) args.task = prompt;
+    // task arrives as a plain argument, where a leading "-" would read as a flag.
+    if (prompt.trim()) args.task = `${prompt.replace(/^-/, " -")}${note ? `\n\nNote: this worktree is ${note}.` : ""}`;
   }
-  ctx.run("space.new", args);
+  return args;
 }
+
+const openSpace = (ctx, spec) => ctx.run("space.new", spaceArgs(ctx, spec));
 
 async function clone(ctx, t) {
   const { path, dest } = await findRepo(ctx.io, ctx.cfg, t);
   if (path) return path;
+  ctx.used?.(dest);
   await ctx.step(`Cloning ${t.owner}/${t.repo}`, async () => {
     await ctx.io.exec("mkdir", ["-p", dest.slice(0, dest.lastIndexOf("/"))]);
     await runLong(ctx.io, ["gh", "repo", "clone", `${t.owner}/${t.repo}`, dest], { onStart: ctx.onJob });
@@ -29,8 +36,24 @@ async function clone(ctx, t) {
   return dest;
 }
 
-async function fetchBranch(ctx, root, branch) {
-  await ctx.step(`Fetching ${branch}`, () => runLong(ctx.io, ["git", "fetch", "origin", branch], { cwd: root, onStart: ctx.onJob }));
+// Spelled out as a refspec so origin/<branch> updates even in a single-branch clone.
+function fetchRef(ctx, root, label, from, to) {
+  return ctx.step(`Fetching ${label}`, () => runLong(ctx.io, ["git", "fetch", "origin", `+${from}:${to}`], { cwd: root, onStart: ctx.onJob }));
+}
+
+const fetchBranch = (ctx, root, branch) => fetchRef(ctx, root, branch, `refs/heads/${branch}`, `refs/remotes/origin/${branch}`);
+
+// GitHub keeps every PR at refs/pull/<n>/head, on the base repo. A fork's branch
+// isn't on origin at all and a merged PR's may be deleted, but this always is.
+async function fetchPR(ctx, root, t, pr, branch) {
+  const pull = `refs/pull/${t.number}/head`;
+  const to = `refs/remotes/origin/${branch}`;
+  if (pr.fork) return fetchRef(ctx, root, `PR #${t.number}`, pull, to);
+  try {
+    await fetchBranch(ctx, root, branch);
+  } catch {
+    await fetchRef(ctx, root, `PR #${t.number}`, pull, to);
+  }
 }
 
 // A branch already checked out somewhere keeps that worktree. git can't put it
@@ -38,6 +61,7 @@ async function fetchBranch(ctx, root, branch) {
 async function ensureWorktree(ctx, repo, { branch, base, fallback, target }) {
   const { worktrees, branches } = await listBranches(ctx.io, repo);
   const existing = worktrees.find((w) => w.branch === branch);
+  if (existing?.prunable) throw new Error(`the worktree for ${branch} is missing on disk; run git worktree prune in ${repo.root}`);
   if (existing) return existing.path;
 
   const path = worktreePath(ctx.cfg, { repo: repo.name, repoRoot: repo.root, branch, owner: target?.owner, host: target?.host }, ctx.io.home);
@@ -55,23 +79,69 @@ async function ensureWorktree(ctx, repo, { branch, base, fallback, target }) {
   return path;
 }
 
+async function checkoutRepo(ctx, t) {
+  const repo = await repoOf(ctx.io, await clone(ctx, t));
+  ctx.used?.(repo.root);
+  return repo;
+}
+
+// Gets a PR onto disk at its latest commit, without opening anything.
+async function preparePR(ctx, repo, t, pr) {
+  // A fork's branch name means nothing here, and can be main.
+  const branch = pr.fork ? `pr-${t.number}` : pr.branch;
+  await fetchPR(ctx, repo.root, t, pr, branch);
+  const remote = `origin/${branch}`;
+  const folder = await ensureWorktree(ctx, repo, { branch, base: remote, target: t });
+  const note = await syncWorktree(ctx.io, folder, remote, { onStart: ctx.onJob });
+  if (note) ctx.warn?.(`${labelFor(t)} is out of date`, `This worktree is ${note}.`);
+  return { branch, folder, note };
+}
+
 async function openPR(ctx, t) {
-  const { path: root } = await findRepo(ctx.io, ctx.cfg, t);
-  if (!root) throw new Error(`no checkout of ${t.owner}/${t.repo}; type ${t.owner}/${t.repo} to clone it first`);
-  const repo = await repoOf(ctx.io, root);
+  const repo = await checkoutRepo(ctx, t);
   const pr = await ctx.step(`Looking up ${labelFor(t)}`, () => lookupPR(ctx.io, t));
-  await fetchBranch(ctx, repo.root, pr.branch);
-  const folder = await ensureWorktree(ctx, repo, { branch: pr.branch, base: `origin/${pr.branch}`, target: t });
-  openSpace(ctx, { name: labelFor(t), folder, kind: t.kind, data: promptData(t, pr) });
+  const { branch, folder, note } = await preparePR(ctx, repo, t, pr);
+  openSpace(ctx, { name: labelFor(t), folder, kind: t.kind, data: promptData(t, { ...pr, branch, path: folder }), note });
+}
+
+// One Space, one tab per layer. Every worktree is ready before anything opens,
+// so a layer that fails leaves no half-built Space. A stack already open is
+// brought up to date and shown as it is.
+async function openStack(ctx, row) {
+  const t = row.target;
+  const repo = await checkoutRepo(ctx, t);
+  const name = stackName(t, row.layers);
+  const parts = [];
+  for (const [i, layer] of row.layers.entries()) {
+    const target = { ...t, number: layer.number, url: layer.url };
+    const made = await preparePR(ctx, repo, target, { branch: layer.branch, fork: layer.fork });
+    const data = promptData(target, { branch: made.branch, title: layer.title, path: made.folder });
+    data.Layer = `${i + 1} of ${row.layers.length}`;
+    data.Base = layer.base;
+    parts.push({ layer, spec: { folder: made.folder, kind: t.kind, data, note: made.note } });
+  }
+
+  const open = ctx.spaces?.().find((s) => s.name.toLowerCase() === name.toLowerCase());
+  if (open) return ctx.run("space.select", { id: open.id });
+
+  const tabName = (i) => `L${i + 1} #${parts[i].layer.number}`;
+  const first = await ctx.command("space.new", { ...spaceArgs(ctx, parts[0].spec), name, tab: tabName(0) });
+  let focus = first.tab;
+  for (let i = 1; i < parts.length; i++) {
+    const made = await ctx.command("tab.new", { ...spaceArgs(ctx, parts[i].spec), name: tabName(i), space: first.space });
+    if (parts[i].layer.number === t.number) focus = made.tab;
+  }
+  await ctx.command("tab.select", { id: focus });
 }
 
 async function openIssue(ctx, t) {
-  const { path: root } = await findRepo(ctx.io, ctx.cfg, t);
-  if (!root) throw new Error(`no checkout of ${t.owner}/${t.repo}; type ${t.owner}/${t.repo} to clone it first`);
-  const repo = await repoOf(ctx.io, root);
+  const repo = await checkoutRepo(ctx, t);
   const title = await ctx.step(`Looking up ${labelFor(t)}`, () => lookupIssueTitle(ctx.io, t));
   const named = { ...t, slug: title };
-  const branch = branchFor(named);
+  // Reopening shouldn't fork the work because the title changed or gh is down.
+  const { branches } = await listBranches(ctx.io, repo);
+  const earlier = branches.find((b) => !b.remote && (b.name === `issue-${t.number}` || b.name.startsWith(`${t.number}-`)));
+  const branch = earlier?.name ?? branchFor(named);
   // No base: the work hasn't started, so it begins where the checkout is.
   const folder = await ensureWorktree(ctx, repo, { branch, target: t });
   openSpace(ctx, { name: labelFor(t), folder, kind: t.kind, data: promptData(named, { branch, title }) });
@@ -91,6 +161,8 @@ export async function openRow(ctx, row, repo) {
       return ctx.run("space.select", { id: row.spaceId });
     case "project":
       return project(row.path);
+    case "stack":
+      return openStack(ctx, row);
     case "clone":
       return project(await clone(ctx, row.target));
     case "link":

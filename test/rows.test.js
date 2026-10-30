@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { actionRows, hasActions, promptRows, hasExactBranch, linearBaseRows, newBranchRow, parseBranches, parseQuery, parseWorktrees, projectRows, rank, resolveLink, spaceLabel, subsequence, worktreeRows } from "../mods/phin-picker/rows.js";
+import { actionRows, hasActions, promptRows, stackRows, hasExactBranch, linearBaseRows, newBranchRow, parseBranches, parseQuery, parseWorktrees, projectRows, rank, resolveLink, spaceLabel, subsequence, worktreeRows } from "../mods/phin-picker/rows.js";
 import { parse } from "../mods/phin-picker/target.js";
 
 const home = "/home/s";
@@ -30,6 +30,14 @@ test("a remote Space doesn't claim a local path", () => {
   const rows = projectRows({ spaces: [space("a", "vps", { machine: "vps", folder: "/home/s/x" })], panes: [pane("a", "/home/s/x")], paths: ["/home/s/x"], home });
   assert.deepEqual(rows.map((r) => r.kind), ["space", "project"]);
   assert.equal(rows[0].detail, "on vps");
+});
+
+test("recent first: Spaces and projects each by score, with the current Space still last", () => {
+  const spaces = [space("a", "here", { active: true }), space("b", "low"), space("c", "high")];
+  const panes = [pane("a", "/h/a"), pane("b", "/h/b"), pane("c", "/h/c")];
+  const scores = { "/h/a": 9, "/h/c": 5, "/h/b": 1, "/h/z": 3 };
+  const rows = projectRows({ spaces, panes, paths: ["/h/m", "/h/y", "/h/z"], home, score: (p) => scores[p] ?? 0 });
+  assert.deepEqual(rows.map((r) => r.label), ["high", "low", "here", "z", "m", "y"]);
 });
 
 test("worktree porcelain", () => {
@@ -79,7 +87,10 @@ test("owner/repo is a clone, a project, or the open Space", () => {
   const t = parseQuery("phin-tech/roux", true);
   assert.equal(resolveLink([], t, { path: null, dest: "/home/s/src/roux" }, home).detail, "clone to ~/src/roux");
   assert.equal(resolveLink([], t, { path: "/home/s/src/roux" }, home).kind, "project");
-  assert.equal(resolveLink([space("a", "roux")], t, { path: "/x" }, home).kind, "space");
+  const on = [space("a", "roux")];
+  assert.equal(resolveLink(on, t, { path: "/x" }, home, [pane("a", "/x")]).kind, "space");
+  assert.equal(resolveLink(on, t, { path: "/y" }, home, [pane("a", "/x")]).kind, "project", "same name, other owner");
+  assert.equal(resolveLink(on, t, { path: null, dest: "/d" }, home, [pane("a", "/x")]).kind, "clone");
   assert.equal(parseQuery("phin-tech/roux", false).kind, "plain");
 });
 
@@ -99,6 +110,20 @@ test("prompt rows carry the agent and the row, and show the first line", () => {
   assert.equal(p.detail, "First");
   assert.equal(p.row, row);
   assert.deepEqual(p.argv, ["claude"]);
+});
+
+test("a stack row per chain, and none for a lone PR", () => {
+  const t = parse("https://github.com/a/b/pull/1");
+  const rows = stackRows(t, [[{ number: 1 }], [{ number: 1 }, { number: 2 }]]);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].label, "Whole stack of 2");
+  assert.equal(rows[0].detail, "#1 → #2");
+  assert.ok(hasActions(rows[0]));
+});
+
+test("owner/repo#42 is a ref at the project level only", () => {
+  assert.equal(parseQuery("a/b#4", true).kind, "github_ref");
+  assert.equal(parseQuery("a/b#4", false).kind, "plain");
 });
 
 test("Space label for a worktree", () => {
