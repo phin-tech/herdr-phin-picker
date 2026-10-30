@@ -1,6 +1,7 @@
 // What picking a row does: focus what exists, create what doesn't.
-// `ctx` is { io, cfg, run, agent, step, onJob }. `step(label, fn)` reports
-// progress; `agent` is the "start an agent" toggle.
+// `ctx` is { io, cfg, run, argv, prompt, step, onJob }. `step(label, fn)` reports
+// progress; `argv` is the agent to start, or null for none; `prompt`, when
+// typed, replaces the configured one.
 
 import { promptData, renderPrompt, worktreePath } from "./config.js";
 import { branchFor, labelFor } from "./target.js";
@@ -10,9 +11,9 @@ import { spaceLabel } from "./rows.js";
 function openSpace(ctx, { name, folder, kind, data }) {
   const args = { folder };
   if (name) args.name = name;
-  if (ctx.agent) {
-    args.argv = ctx.cfg.agent.argv;
-    const prompt = renderPrompt(ctx.cfg.agent.prompts[kind], data);
+  if (ctx.argv) {
+    args.argv = ctx.argv;
+    const prompt = renderPrompt(ctx.prompt || ctx.cfg.agent.prompts[kind], data);
     if (prompt.trim()) args.task = prompt;
   }
   ctx.run("space.new", args);
@@ -82,7 +83,7 @@ export async function openRow(ctx, row, repo) {
     const t = spec.target;
     openSpace(ctx, t
       ? { name: labelFor(t), folder, kind: t.kind, data: promptData(t, { branch: spec.branch, path: folder }) }
-      : { name: spaceLabel(repo.name, spec.branch), folder, kind: "project", data: { Repo: repo.name, Path: folder } });
+      : { name: spaceLabel(repo.name, spec.branch), folder, kind: "project", data: { Repo: repo.name, Path: folder, Branch: spec.branch } });
   });
 
   switch (row.kind) {
@@ -95,7 +96,7 @@ export async function openRow(ctx, row, repo) {
     case "link":
       return row.target.kind === "github_pr" ? openPR(ctx, row.target) : openIssue(ctx, row.target);
     case "worktree":
-      return openSpace(ctx, { name: spaceLabel(repo.name, row.label), folder: row.path, kind: "project", data: { Repo: repo.name, Path: row.path } });
+      return openSpace(ctx, { name: spaceLabel(repo.name, row.label), folder: row.path, kind: "project", data: { Repo: repo.name, Path: row.path, Branch: row.branch } });
     case "prunable":
       throw new Error(`${row.label} is missing on disk; run git worktree prune in ${repo.root}`);
     case "branch":

@@ -1,13 +1,15 @@
-// Settings: ~/.config/phin-picker/config.json, every key optional.
+// Settings: ~/.config/phin-tech/picker/config.json, every key optional.
+// Saved prompts sit beside it in prompts/, one file each.
 
 import { sanitize } from "./target.js";
 
-export const CONFIG_PATH = ".config/phin-picker/config.json";
+export const CONFIG_PATH = ".config/phin-tech/picker/config.json";
+export const PROMPTS_PATH = ".config/phin-tech/picker/prompts";
 
 const DEFAULTS = {
   repos: { templates: ["~/src/{host}/{owner}/{repo}"] },
   agent: {
-    enabled: true,
+    enabled: false,
     argv: ["claude"],
     prompts: {
       github_pr: "Review PR #{{.Number}} — {{.Title}}\n{{.URL}}",

@@ -10,12 +10,12 @@ test("roots come from the templates", () => {
 test("a broken file falls back and says so", () => {
   const c = parseConfig("{nope");
   assert.match(c.problem, /using defaults/);
-  assert.equal(c.agent.enabled, true);
+  assert.equal(c.agent.enabled, false);
 });
 
 test("overrides merge, prompts by key", () => {
-  const c = parseConfig('{"agent":{"enabled":false,"prompts":{"project":"hi"}},"projects":{"roots":["~/x"]}}');
-  assert.equal(c.agent.enabled, false);
+  const c = parseConfig('{"agent":{"enabled":true,"prompts":{"project":"hi"}},"projects":{"roots":["~/x"]}}');
+  assert.equal(c.agent.enabled, true);
   assert.equal(c.agent.prompts.project, "hi");
   assert.match(c.agent.prompts.github_pr, /Review PR/);
   assert.deepEqual(c.projects.roots, ["~/x"]);

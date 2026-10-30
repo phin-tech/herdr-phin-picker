@@ -148,6 +148,20 @@ export function linearBaseRows(repo, ticket, rows) {
   return out;
 }
 
+// Rows that can be opened more than one way. Spaces already are whatever they are.
+export const hasActions = (row) => !["space", "prunable"].includes(row.kind);
+
+export function actionRows(row, agents) {
+  return [
+    { kind: "action", label: "Open", row, argv: null, detail: "no agent" },
+    ...agents.map((a) => ({ kind: "action", label: `Start ${a.name}`, row, argv: a.run, detail: a.run.join(" ") })),
+  ];
+}
+
+export function promptRows(action, prompts) {
+  return prompts.map((p) => ({ kind: "prompt", label: p.name, row: action.row, argv: action.argv, text: p.text, detail: p.text.split("\n")[0] }));
+}
+
 export function parseQuery(query, atProjects) {
   const t = parse(query);
   return t.kind === "plain" && atProjects ? (parseRepoShorthand(query) ?? t) : t;

@@ -1,8 +1,9 @@
 // Finding things on disk and through git and gh. Everything from the outside
 // world arrives in `io`, so Node can test this against real repositories:
-// { exec(cmd, args, opts), hc(args), readdir(path), exists(path), home }.
+// { exec(cmd, args, opts), hc(args), readdir(path), readText(path), exists(path), home }.
 
-import { expandHome, repoCandidates } from "./config.js";
+import { PROMPTS_PATH, expandHome, repoCandidates } from "./config.js";
+import { DEFAULT_PROMPTS } from "./prompts.js";
 import { parseBranches, parseWorktrees } from "./rows.js";
 
 const hasMeta = (s) => /[*?[]/.test(s);
@@ -84,6 +85,25 @@ export async function discover(io, projects) {
     }
   }
   return [...seen].sort();
+}
+
+// The built-in prompts plus the prompts folder: a file's name is its label, its
+// text the prompt, and it replaces a built-in of the same name.
+export async function loadPrompts(io) {
+  const dir = `${io.home}/${PROMPTS_PATH}`;
+  let entries;
+  try {
+    entries = await io.readdir(dir);
+  } catch {
+    return DEFAULT_PROMPTS;
+  }
+  const prompts = [];
+  for (const name of entries.map((e) => e.name).filter((n) => /\.(md|txt)$/.test(n) && !n.startsWith(".")).sort()) {
+    const text = (await io.readText(`${dir}/${name}`))?.trim();
+    if (text) prompts.push({ name: name.replace(/\.[^.]+$/, ""), text });
+  }
+  const yours = new Set(prompts.map((p) => p.name));
+  return [...DEFAULT_PROMPTS.filter((p) => !yours.has(p.name)), ...prompts];
 }
 
 export async function findRepo(io, cfg, t) {

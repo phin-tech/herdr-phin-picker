@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { hasExactBranch, linearBaseRows, newBranchRow, parseBranches, parseQuery, parseWorktrees, projectRows, rank, resolveLink, spaceLabel, subsequence, worktreeRows } from "../mods/phin-picker/rows.js";
+import { actionRows, hasActions, promptRows, hasExactBranch, linearBaseRows, newBranchRow, parseBranches, parseQuery, parseWorktrees, projectRows, rank, resolveLink, spaceLabel, subsequence, worktreeRows } from "../mods/phin-picker/rows.js";
 import { parse } from "../mods/phin-picker/target.js";
 
 const home = "/home/s";
@@ -81,6 +81,24 @@ test("owner/repo is a clone, a project, or the open Space", () => {
   assert.equal(resolveLink([], t, { path: "/home/s/src/roux" }, home).kind, "project");
   assert.equal(resolveLink([space("a", "roux")], t, { path: "/x" }, home).kind, "space");
   assert.equal(parseQuery("phin-tech/roux", false).kind, "plain");
+});
+
+test("actions: open first, then each agent, and only for rows that can be opened", () => {
+  const row = { kind: "branch", label: "x" };
+  const rows = actionRows(row, [{ name: "Claude Code", run: ["claude"] }]);
+  assert.deepEqual(rows.map((r) => [r.label, r.argv]), [["Open", null], ["Start Claude Code", ["claude"]]]);
+  assert.equal(rows[1].row, row);
+  assert.ok(!hasActions({ kind: "space" }));
+  assert.ok(!hasActions({ kind: "prunable" }));
+  assert.ok(hasActions({ kind: "link" }));
+});
+
+test("prompt rows carry the agent and the row, and show the first line", () => {
+  const row = { kind: "branch", label: "x" };
+  const [p] = promptRows({ row, argv: ["claude"] }, [{ name: "review", text: "First\nSecond" }]);
+  assert.equal(p.detail, "First");
+  assert.equal(p.row, row);
+  assert.deepEqual(p.argv, ["claude"]);
 });
 
 test("Space label for a worktree", () => {

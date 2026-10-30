@@ -3,23 +3,26 @@
 
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { exec, hc, home, panes, spaces, focused, props, closeOverlay, readTextFile, run, theme } from "herdr";
+import { exec, hc, home, knownAgents, panes, spaces, focused, props, closeOverlay, readTextFile, run, theme } from "herdr";
 import { exists, readdir } from "fs/promises";
 import { CONFIG_PATH, parseConfig } from "./config.js";
-import { discover, findRepo, listBranches, repoOf, runLong } from "./lookup.js";
-import { hasExactBranch, linearBaseRows, newBranchRow, parseQuery, projectRows, rank, resolveLink, worktreeRows } from "./rows.js";
+import { promptsFor } from "./prompts.js";
+import { parse } from "./target.js";
+import { discover, findRepo, listBranches, loadPrompts, repoOf, runLong } from "./lookup.js";
+import { actionRows, hasActions, hasExactBranch, linearBaseRows, newBranchRow, parseQuery, projectRows, promptRows, rank, resolveLink, worktreeRows } from "./rows.js";
 import { cloneRepo, openRow } from "./actions.js";
 
 const VISIBLE = 14;
 const BADGES = {
   space: "open", project: "new", clone: "clone", link: "link", worktree: "tree",
-  branch: "local", remote_branch: "remote", new_branch: "create", linear_base: "base", prunable: "gone",
+  branch: "local", remote_branch: "remote", new_branch: "create", linear_base: "base", prunable: "gone", action: "do", prompt: "prompt",
 };
 
 const io = {
   exec,
   hc,
   exists,
+  readText: readTextFile,
   home: home(),
   readdir: (path) => readdir(path, { withFileTypes: true }),
 };
@@ -36,7 +39,6 @@ export default class Picker extends View {
     this.levels = [];
     this.rows = [];
     this.at = 0;
-    this.agent = true;
     this.steps = null;
     this.job = null;
     this.problem = null;
@@ -44,7 +46,6 @@ export default class Picker extends View {
 
     cx.spawn(async (cx) => {
       this.cfg = parseConfig(await readTextFile(`${io.home}/${CONFIG_PATH}`));
-      this.agent = this.cfg.agent.enabled;
       this.problem = this.cfg.problem;
       try {
         if (props().start === "branches") {
@@ -86,7 +87,7 @@ export default class Picker extends View {
     const query = this.input.value().trim();
     level.filter = query;
     this.at = 0;
-    const t = parseQuery(query, level.kind === "projects");
+    const t = level.kind === "actions" || level.kind === "prompts" ? parse("") : parseQuery(query, level.kind === "projects");
     if (t.kind === "github_repo") {
       this.rows = [];
       cx.spawn(async (cx) => {
@@ -97,7 +98,9 @@ export default class Picker extends View {
       return cx.notify();
     }
     const link = resolveLink(spaces(), t, null, io.home);
-    if (link) this.rows = [link];
+    // At the action level the box holds a prompt, which only an agent can take.
+    if (level.kind === "actions") this.rows = query ? level.all.filter((r) => r.argv) : level.all;
+    else if (link) this.rows = [link];
     else if (!query) this.rows = level.all;
     else {
       this.rows = rank(query, level.all);
@@ -107,7 +110,7 @@ export default class Picker extends View {
   }
 
   // Runs slow work with a checklist on screen. A failed step stays there with why.
-  busy(cx, work) {
+  busy(cx, work, { argv = null, prompt = "" } = {}) {
     this.steps = [];
     this.problem = null;
     cx.notify();
@@ -127,7 +130,7 @@ export default class Picker extends View {
           throw e;
         }
       };
-      const ctx = { io, cfg: this.cfg, run, agent: this.agent, step, onJob: (t) => { this.job = t; } };
+      const ctx = { io, cfg: this.cfg, run, argv, prompt, step, onJob: (t) => { this.job = t; } };
       try {
         if (await work(ctx)) return closeOverlay(props().overlay);
         this.steps = null;
@@ -145,10 +148,13 @@ export default class Picker extends View {
     // A ticket names no repository, so the next pick is the repository.
     if (row.kind === "link" && row.target.kind === "linear") return this.takeTicket(row, cx);
     if (this.ticket && this.level.kind === "projects") return this.descend(cx);
+    const defaultAgent = this.cfg.agent.enabled ? this.cfg.agent.argv : null;
+    const picked = row.row ?? row;
+    const prompt = row.kind === "prompt" ? row.text : row.kind === "action" ? this.input.value().trim() : "";
     this.busy(cx, async (ctx) => {
-      await openRow(ctx, row, this.level.repo);
+      await openRow(ctx, picked, this.level.repo);
       return true;
-    });
+    }, row.row ? { argv: row.argv, prompt } : { argv: defaultAgent });
   }
 
   takeTicket(row, cx) {
@@ -162,8 +168,18 @@ export default class Picker extends View {
     const row = this.rows[this.at];
     if (!row || this.steps) return;
     if (row.kind === "link" && row.target.kind === "linear") return this.takeTicket(row, cx);
-    if (this.level.kind !== "projects") return;
-    if (row.kind === "clone") {
+    if (this.level.kind === "prompts") return;
+    if (this.level.kind === "actions") {
+      if (!row.argv) return;
+      return this.busy(cx, async () => {
+        const prompts = promptsFor(row.row, await loadPrompts(io));
+        this.levels.push({ kind: "prompts", name: row.label, repo: this.level.repo, all: promptRows(row, prompts), filter: "" });
+        this.input.set_value("");
+        return false;
+      });
+    }
+    const repoRow = row.kind === "project" || row.kind === "space";
+    if (this.level.kind === "projects" && row.kind === "clone") {
       return this.busy(cx, async (ctx) => {
         const dest = await cloneRepo(ctx, row.target);
         await this.pushRepo(dest);
@@ -171,9 +187,20 @@ export default class Picker extends View {
         return false;
       });
     }
-    if (!row.path) return;
+    if (this.level.kind === "projects" && repoRow) {
+      if (!row.path) return;
+      return this.busy(cx, async () => {
+        await this.pushRepo(row.path);
+        this.input.set_value("");
+        return false;
+      });
+    }
+    if (!hasActions(row)) return;
     this.busy(cx, async () => {
-      await this.pushRepo(row.path);
+      const agents = await knownAgents().catch(() => []);
+      const installed = agents.filter((a) => a.installed);
+      const choices = installed.length ? installed : [{ name: this.cfg.agent.argv[0], run: this.cfg.agent.argv }];
+      this.levels.push({ kind: "actions", name: row.label, repo: this.level.repo, all: actionRows(row, choices), filter: "" });
       this.input.set_value("");
       return false;
     });
@@ -207,12 +234,15 @@ export default class Picker extends View {
 
   footer() {
     const row = this.rows[this.at];
-    const parts = ["↵ open", row?.path && this.level?.kind === "projects" ? "⇥ branches" : null, "⌃A agent", this.level?.kind === "branches" ? "⌃R fetch" : null, "esc back"];
+    const kind = this.level?.kind;
+    const repoRow = kind === "projects" && (row?.kind === "clone" || ((row?.kind === "project" || row?.kind === "space") && row.path));
+    const tab = repoRow ? "⇥ branches" : kind === "actions" ? (row?.argv ? "⇥ saved prompts" : null) : row && kind !== "prompts" && hasActions(row) ? "⇥ actions" : null;
+    const parts = [kind === "actions" ? "↵ do it · type a prompt for the agent" : "↵ open", tab, kind === "branches" ? "⌃R fetch" : null, "esc back"];
     return parts.filter(Boolean).join("   ");
   }
 
   title() {
-    const names = this.levels.filter((l) => l.repo).map((l) => l.repo.name);
+    const names = this.levels.map((l) => l.name ?? l.repo?.name).filter(Boolean);
     return ["Open a project", ...names].join(" › ");
   }
 
@@ -253,15 +283,12 @@ export default class Picker extends View {
         else if (e.key === "up" && n) this.at = (this.at + n - 1) % n;
         else if (e.key === "tab" && e.modifiers.shift) this.ascend(cx);
         else if (e.key === "tab") this.descend(cx);
-        else if (e.key === "a" && e.modifiers.control) this.agent = !this.agent;
         else if (e.key === "r" && e.modifiers.control) this.refresh(cx);
         else return;
         cx.stop_propagation();
         cx.notify();
       })
-      .child(h_flex().items_center().gap(10)
-        .child(div().flex_1().truncate().text_size(15).font_semibold().text_color(t.foreground).child(this.title()))
-        .child(div().text_size(11).text_color(this.agent ? t.accent : t.dim).child(this.agent ? "agent on" : "agent off")))
+      .child(div().truncate().text_size(15).font_semibold().text_color(t.foreground).child(this.title()))
       .when(!!this.ticket, (el) => el.child(div().text_size(12).text_color(t.accent).truncate().child(`Ticket ${this.ticket.issue}: ${this.level?.kind === "branches" ? "pick a base" : "pick a repository"}`)))
       .child(h_flex().h(36).flex_none().px(10).items_center().rounded(9).border_1().border_color(t.accent).bg(t.background)
         .child(Input.new(this.input).flex_1().h_full().text_size(12.8).text_color(t.foreground)))

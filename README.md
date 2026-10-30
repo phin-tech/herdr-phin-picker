@@ -31,10 +31,9 @@ appears twice.
 | Key | Does |
 | --- | --- |
 | type | subsequence filter over name and path |
-| `enter` | open the row |
-| `tab` | go into a repo's worktrees and branches |
+| `enter` | open the row, with no agent unless `agent.enabled` is set |
+| `tab` | on a repo, its worktrees and branches; on anything else, what to do with it |
 | `shift+tab` / `esc` | back up a level, filter intact |
-| `ctrl+a` | toggle "start an agent" |
 | `ctrl+r` | fetch and refresh, at the branch level |
 
 Paste into the box instead of filtering:
@@ -49,18 +48,23 @@ Paste into the box instead of filtering:
 Type a name that matches no branch and you get a row that creates it, based on
 the default branch.
 
-Agent prompts are sent as soon as the agent starts. The app has no way to type
+The `tab` level offers Open and a Start row for each agent installed here. Type
+in the box there to give the agent a prompt, replacing the configured one, or
+press `tab` on a Start row to pick a saved prompt.
+Projects and branches have no configured prompt by default. Agent prompts are
+sent as soon as the agent starts. The app has no way to type
 one and leave it unsent.
 
 ## Configuration
 
-`~/.config/phin-picker/config.json`. Every key is optional:
+Everything lives in `~/.config/phin-tech/picker/`. `config.json` is optional, and
+so is every key in it:
 
 ```json
 {
   "repos": { "templates": ["~/src/{host}/{owner}/{repo}"] },
   "agent": {
-    "enabled": true,
+    "enabled": false,
     "argv": ["claude"],
     "prompts": {
       "github_pr": "Review PR #{{.Number}} — {{.Title}}\n{{.URL}}",
@@ -79,19 +83,30 @@ your home folder, since mods can't read outside it. Prompts take plain
 `{{.Field}}` placeholders: `URL Host Owner Repo Number Title Issue Slug Branch
 Text Path`.
 
-## Hacking on it
+## Saved prompts
 
-`target.js`, `rows.js` and `config.js` are pure, and `lookup.js` and `actions.js`
-take the outside world as an argument, so they all run under Node:
+`tab` on a Start row lists the prompts that suit that row:
 
-```sh
-npm test
+| Row | Prompts |
+| --- | --- |
+| project or branch | `orient`, `plan`, `fix-tests`, `review-branch` |
+| PR | `orient`, `review`, `address-comments`, `fix-ci` |
+| issue or Linear ticket | `orient`, `plan`, `implement`, `investigate` |
+
+Add your own, or replace one of these by using its name. Each `.md` or `.txt` file in `~/.config/phin-tech/picker/prompts/` is a prompt,
+named after the file, and shows on every row:
+
+```
+~/.config/phin-tech/picker/prompts/
+  review.md      Review {{.Branch}} for correctness bugs.
+  plan.md        Read {{.Repo}} and write a plan before changing anything.
 ```
 
-`herdr-app check` only loads a mod and renders it once, so run both.
-- Mods can't import across folders, which is why `phin-worktrees` just opens
-  `phin-picker` with props: `mod.open` passes none.
-- `exec` stops at 30 seconds, so clones, fetches and `git worktree add` run in a
-  core terminal through `runLong`. Without `herdr.*` labels it stays off screen.
-- `fs/promises` only reads inside home, so glob walks start at the deepest
-  literal folder.
+They take the same placeholders as the prompts above. A row only fills in what
+it knows: a PR has `Number`, `Title` and `URL`, while a branch has `Repo`, `Path`
+and `Branch`. Anything else renders empty. The picker reads the folder each time,
+so a new file shows up without a reload.
+
+## Hacking on it
+
+`AGENTS.md` has how to change and test this, for agents and people alike.
