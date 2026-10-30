@@ -21,25 +21,20 @@ The agent is the installer, since the app has no install command. It reads the
 files, adds both mods and merges the keys, asking before it replaces a key you
 already use.
 
-Or do it by hand. Download both mods into Herdr's mods folder, then check them:
+Or run the installer, which also updates:
 
 ```sh
-curl -fsSL https://git.phin.tech/api/v1/repos/sam/herdr-phin-picker/archive/main.tar.gz \
-  | tar -xz -C ~/.config/herdr-app/mods --strip-components=2 herdr-phin-picker/mods
-herdr-app check ~/.config/herdr-app/mods/phin-picker
-herdr-app check ~/.config/herdr-app/mods/phin-worktrees
+curl -fsSL https://raw.githubusercontent.com/phin-tech/herdr-phin-picker/main/install.sh | sh
 ```
 
-Run it again to update. Then add these to `global` in
-`~/.config/herdr-app/keys.json`, after checking the keys are free:
-
-```json
-"cmd-o": "mod.open:phin-picker",
-"cmd-shift-o": "mod.open:phin-worktrees"
-```
+It shows what it will do, asks before changing anything, and walks through four
+steps: download, back up any old copy, install, and add the keys. It installs a fixed
+release and checks its SHA-256, so it never runs whatever happens to be on `main`. It
+keeps any key you already use, and tells you if that happens. Without `jq` it prints
+the keys for you to add. Use `sh install.sh --yes` to skip the questions.
 
 To work on it, clone the repo and symlink the two folders from `mods/` in instead.
-Don't run the `curl` line over symlinks: it writes through them into your clone.
+The installer refuses to run over those symlinks, so update your clone instead.
 
 | Key | Does |
 | --- | --- |

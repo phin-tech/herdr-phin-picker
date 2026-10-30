@@ -45,10 +45,26 @@ Done when all three pass, in this order:
 `actions.js` take the outside world as `io` and `ctx`. Keep new logic in these so
 Node can test it, and keep `main.js` to the UI.
 
-Every pushed change bumps `version` in `mods/phin-picker/mod.json` and adds an entry
-to the Changelog in `RECIPE.md`, since that's what installed copies update from. Say
+Every release bumps `version` in `mods/phin-picker/mod.json` and adds an entry to the
+Changelog in `RECIPE.md`, since that's what installed copies update from. Say
 under **You need to** anything a person or their agent must do by hand. `npm test`
 fails if the two versions differ.
+
+### Releasing
+
+Forgejo is the source of truth, and GitHub is a replica with pull requests off, so
+push to Forgejo only. A release is the person's decision.
+
+1. Commit the version bump and Changelog, then tag it: `git tag -a v<version>`.
+2. Push the commit and tag to Forgejo, and wait for both to reach GitHub.
+3. Build the asset from the tag, so it can't contain `install.sh`:
+   `git archive --format=tar --prefix=herdr-phin-picker-<version>/ v<version> mods keys.json | gzip -9n`.
+4. `gh release create v<version> <asset> --repo phin-tech/herdr-phin-picker --verify-tag`.
+5. Set `VERSION` and `SHA256` in `install.sh`, commit, and push. Done when
+   `install.sh` installs that version from a clean `HERDR_APP_HOME`.
+
+Releases are immutable and a ruleset blocks moving or deleting `v*` tags on GitHub,
+so a published version can't be fixed in place: release a new one.
 
 The installed mods are symlinks to this repo, so saving a file changes the
 running app.
