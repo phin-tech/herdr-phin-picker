@@ -1,6 +1,7 @@
 // The picker's rows and the rules behind them. Pure, so Node can test it.
 // A checkout with a Space never appears twice: you get the Space.
 
+import { repoCandidates } from "./config.js";
 import { labelFor, branchFor, parse, parseRef, parseRepoShorthand } from "./target.js";
 
 const basename = (p) => p.replace(/\/+$/, "").split("/").pop();
@@ -150,6 +151,14 @@ export function linearBaseRows(repo, ticket, rows) {
 // Rows that can be opened more than one way. Spaces already are whatever they are.
 export const hasActions = (row) => !["space", "prunable"].includes(row.kind);
 
+// Herdr's agents plus the config's. A config entry for the same program wins, so a
+// path can point a known agent at a particular install.
+export function mergeAgents(known, configured) {
+  const program = (a) => a.run[0].split("/").pop();
+  const mine = new Set(configured.map(program));
+  return [...known.filter((a) => !mine.has(program(a))), ...configured];
+}
+
 export function actionRows(row, agents) {
   return [
     { kind: "action", label: "Open", row, argv: null, detail: "no agent" },
@@ -166,6 +175,53 @@ export function stackRows(target, paths) {
 
 export function promptRows(action, prompts) {
   return prompts.map((p) => ({ kind: "prompt", label: p.name, row: action.row, argv: action.argv, text: p.text, detail: p.text.split("\n")[0] }));
+}
+
+// "org:acme", "org acme" or "acme/": asking for an org's list, which only asking
+// fetches. Works for a user too.
+export function parseOrgQuery(query) {
+  const m = query.match(/^org[:\s]\s*([A-Za-z0-9][A-Za-z0-9-]*)$/i) ?? query.match(/^([A-Za-z0-9][A-Za-z0-9-]*)\/$/);
+  return m ? m[1] : null;
+}
+
+// What's typed after "org:", for completing against your orgs, or null.
+export function orgPrefix(query) {
+  const m = query.match(/^org:\s*(\S*)$/i);
+  return m ? m[1] : null;
+}
+
+// Your orgs that match, best first, and a row for any other name you've typed.
+export function orgCompletions(prefix, names, cachedFor, now) {
+  const p = prefix.toLowerCase();
+  const start = names.filter((n) => n.toLowerCase().startsWith(p));
+  const rest = names.filter((n) => !start.includes(n) && subsequence(p, n.toLowerCase()));
+  const matches = [...start, ...rest];
+  if (prefix && !names.some((n) => n.toLowerCase() === p)) matches.push(prefix);
+  return matches.map((org) => orgRow(org, cachedFor(org), now));
+}
+
+function ago(ms) {
+  const hours = Math.floor(ms / 3600000);
+  if (hours < 1) return "just now";
+  return hours < 24 ? `${hours}h ago` : `${Math.floor(hours / 24)}d ago`;
+}
+
+export function orgRow(org, cached, now) {
+  const detail = cached ? `${cached.repos.length} repos, listed ${ago(now - cached.at)}` : "lists its repos from GitHub";
+  return { kind: "org", label: `Search ${org}`, org, detail };
+}
+
+// An org's repos, newest push first, in the rows you'd get for them anyway: a repo
+// you have is its open or new row, and the rest can be cloned.
+export function orgRows({ org, repos, cfg, home, projects }) {
+  const byPath = new Map(projects.filter((r) => r.path).map((r) => [r.path, r]));
+  const sorted = [...repos].sort((a, b) => (b.pushedAt ?? "").localeCompare(a.pushedAt ?? ""));
+  return sorted.map((r) => {
+    const target = { kind: "github_repo", text: `${org}/${r.name}`, url: `${org}/${r.name}`, host: "github.com", owner: org, repo: r.name };
+    const candidates = repoCandidates(cfg, target, home);
+    const have = candidates.map((p) => byPath.get(p)).find(Boolean);
+    return have ?? { kind: "clone", label: r.name, target, detail: r.description || `clone to ${shortenHome(candidates[0], home)}` };
+  });
 }
 
 export function parseQuery(query, atProjects) {

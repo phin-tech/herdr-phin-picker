@@ -9,14 +9,14 @@ import { CONFIG_PATH, parseConfig } from "./config.js";
 import { promptsFor } from "./prompts.js";
 import { parse, resolveRef } from "./target.js";
 import { recordUse, scoreAt } from "./recent.js";
-import { discover, findRepo, isPullRequest, listBranches, loadPrompts, lookupStacks, repoOf, runLong } from "./lookup.js";
-import { actionRows, hasActions, hasExactBranch, linearBaseRows, newBranchRow, parseQuery, projectRows, promptRows, rank, resolveLink, stackRows, worktreeRows } from "./rows.js";
+import { configuredAgents, discover, findRepo, isPullRequest, listBranches, loadPrompts, lookupStacks, myOrgs, orgRepos, repoOf, runLong } from "./lookup.js";
+import { actionRows, mergeAgents, hasActions, hasExactBranch, linearBaseRows, newBranchRow, orgCompletions, orgPrefix, orgRow, orgRows, parseOrgQuery, parseQuery, projectRows, promptRows, rank, resolveLink, stackRows, worktreeRows } from "./rows.js";
 import { cloneRepo, openRow } from "./actions.js";
 
 const VISIBLE = 14;
 const BADGES = {
   space: "open", project: "new", clone: "clone", link: "link", worktree: "tree",
-  branch: "local", remote_branch: "remote", new_branch: "create", linear_base: "base", prunable: "gone", action: "do", prompt: "prompt", stack: "stack",
+  branch: "local", remote_branch: "remote", new_branch: "create", linear_base: "base", prunable: "gone", action: "do", prompt: "prompt", stack: "stack", org: "org",
 };
 
 const io = {
@@ -36,6 +36,11 @@ async function command(name, args) {
   if (r.code !== 0 || out.error) throw new Error(`${name}: ${out.error ?? r.stderr.trim()}`);
   return out;
 }
+
+const ORGS = "phin-picker.orgs";
+const MY_ORGS = "@me"; // In the same cache: "@" can't start a GitHub login.
+const orgCache = (org) => shared(ORGS)?.[org.toLowerCase()];
+const rememberOrg = (org, entry) => setShared(ORGS, { ...shared(ORGS), [org.toLowerCase()]: entry });
 
 const RECENT = "phin-picker.recent";
 const recent = () => shared(RECENT) ?? {};
@@ -75,7 +80,9 @@ export default class Picker extends View {
           await this.pushRepo(folder, true);
         } else {
           const paths = await discover(io, this.cfg.projects);
-          this.levels = [{ kind: "projects", all: projectRows({ spaces: spaces(), panes: panes(), paths, home: io.home, score: scorer() }), filter: "" }];
+          const rows = projectRows({ spaces: spaces(), panes: panes(), paths, home: io.home, score: scorer() });
+          const orgs = this.cfg.orgs.map((org) => orgRow(org, orgCache(org), Date.now()));
+          this.levels = [{ kind: "projects", all: [...rows, ...orgs], filter: "" }];
         }
       } catch (e) {
         this.problem = e.message;
@@ -110,7 +117,19 @@ export default class Picker extends View {
     const query = this.input.value().trim();
     level.filter = query;
     this.at = 0;
-    this.problem = this.cfg?.problem ?? null;
+    this.problem = this.notice ?? this.cfg?.problem ?? null;
+    this.notice = null;
+    const prefix = level.kind === "projects" ? orgPrefix(query) : null;
+    if (prefix !== null) {
+      this.rows = orgCompletions(prefix, orgCache(MY_ORGS)?.repos ?? [], orgCache, Date.now());
+      this.loadMyOrgs(cx);
+      return cx.notify();
+    }
+    const org = level.kind === "projects" ? parseOrgQuery(query) : null;
+    if (org) {
+      this.rows = [orgRow(org, orgCache(org), Date.now())];
+      return cx.notify();
+    }
     const t = level.kind === "actions" || level.kind === "prompts" ? parse("") : parseQuery(query, level.kind === "projects");
     if (t.kind === "github_repo") {
       this.rows = [];
@@ -185,7 +204,7 @@ export default class Picker extends View {
     if (!row || this.steps) return;
     // A ticket names no repository, so the next pick is the repository.
     if (row.kind === "link" && row.target.kind === "linear") return this.takeTicket(row, cx);
-    if (row.kind === "stack" || (this.ticket && this.level.kind === "projects")) return this.descend(cx);
+    if (row.kind === "stack" || row.kind === "org" || (this.ticket && this.level.kind === "projects")) return this.descend(cx);
     const defaultAgent = this.cfg.agent.enabled ? this.cfg.agent.argv : null;
     const picked = row.row ?? row;
     const prompt = row.kind === "prompt" ? row.text : row.kind === "action" ? this.input.value().trim() : "";
@@ -210,6 +229,7 @@ export default class Picker extends View {
     if (row.kind === "link" && row.target.kind === "linear") return this.takeTicket(row, cx);
     if (this.level.kind === "prompts") return;
     if (row.kind === "stack") return this.pushActions(row, cx);
+    if (row.kind === "org") return this.pushOrg(row.org, cx);
     if (this.level.kind === "actions") {
       if (!row.argv) return;
       return this.busy(cx, async () => {
@@ -220,7 +240,7 @@ export default class Picker extends View {
       });
     }
     const repoRow = row.kind === "project" || row.kind === "space";
-    if (this.level.kind === "projects" && row.kind === "clone") {
+    if (["projects", "org"].includes(this.level.kind) && row.kind === "clone") {
       return this.busy(cx, async (ctx) => {
         const dest = await cloneRepo(ctx, row.target);
         await this.pushRepo(dest);
@@ -228,7 +248,7 @@ export default class Picker extends View {
         return false;
       });
     }
-    if (this.level.kind === "projects" && repoRow) {
+    if (["projects", "org"].includes(this.level.kind) && repoRow) {
       if (!row.path) return;
       return this.busy(cx, async () => {
         await this.pushRepo(row.path);
@@ -239,10 +259,40 @@ export default class Picker extends View {
     if (hasActions(row)) this.pushActions(row, cx);
   }
 
+  // Your orgs for completing "org:", once per opening unless forced. Only names,
+  // from the cache while it's fresh: no org's repos are read until one is picked.
+  loadMyOrgs(cx, force = false) {
+    if (this.orgsAsked && !force) return;
+    this.orgsAsked = true;
+    cx.spawn(async (cx) => {
+      try {
+        const found = await myOrgs(io, { cached: orgCache(MY_ORGS), now: Date.now(), force });
+        if (found.fetched) rememberOrg(MY_ORGS, found.entry);
+        if (found.stale) this.notice = `couldn't refresh your orgs, showing the saved list: ${found.stale}`;
+      } catch (e) {
+        this.notice = `couldn't list your orgs: ${e.message}`;
+      }
+      if (orgPrefix(this.input.value().trim()) !== null) this.applyFilter(cx);
+    });
+  }
+
+  pushOrg(org, cx, force = false) {
+    const projects = this.levels[0].all;
+    this.busy(cx, async (ctx) => {
+      const found = await ctx.step(`Listing ${org}`, () => orgRepos(io, org, { cached: orgCache(org), now: Date.now(), force }));
+      if (found.fetched) rememberOrg(org, found.entry);
+      if (force) this.levels.pop();
+      this.levels.push({ kind: "org", org, name: org, all: orgRows({ org, repos: found.entry.repos, cfg: this.cfg, home: io.home, projects }), filter: "" });
+      this.input.set_value("");
+      this.notice = found.stale ? `couldn't refresh ${org}, showing the saved list: ${found.stale}` : null;
+      return false;
+    });
+  }
+
   pushActions(row, cx) {
     this.busy(cx, async () => {
       const agents = await knownAgents().catch(() => []);
-      const installed = agents.filter((a) => a.installed);
+      const installed = mergeAgents(agents.filter((a) => a.installed), await configuredAgents(io, this.cfg));
       const choices = installed.length ? installed : [{ name: this.cfg.agent.argv[0], run: this.cfg.agent.argv }];
       const pr = row.kind === "link" && row.target.kind === "github_pr";
       const stacks = pr ? stackRows(row.target, await lookupStacks(io, row.target)) : [];
@@ -272,6 +322,8 @@ export default class Picker extends View {
 
   refresh(cx) {
     const level = this.level;
+    if (level?.kind === "org" && !this.steps) return this.pushOrg(level.org, cx, true);
+    if (level?.kind === "projects" && orgPrefix(this.input.value().trim()) !== null) return this.loadMyOrgs(cx, true);
     if (level?.kind !== "branches" || this.steps) return;
     this.busy(cx, async (ctx) => {
       await ctx.step("Fetching origin", () => runLong(io, ["git", "fetch", "--prune", "origin"], { cwd: level.repo.root, onStart: ctx.onJob }));
@@ -284,9 +336,9 @@ export default class Picker extends View {
   footer() {
     const row = this.rows[this.at];
     const kind = this.level?.kind;
-    const repoRow = kind === "projects" && (row?.kind === "clone" || ((row?.kind === "project" || row?.kind === "space") && row.path));
-    const tab = repoRow ? "⇥ branches" : row?.kind === "stack" ? "⇥ choose" : kind === "actions" ? (row?.argv ? "⇥ saved prompts" : null) : row && kind !== "prompts" && hasActions(row) ? "⇥ actions" : null;
-    const parts = [kind === "actions" ? "↵ do it · type a prompt for the agent" : "↵ open", tab, kind === "branches" ? "⌃R fetch" : null, "esc back"];
+    const repoRow = (kind === "projects" || kind === "org") && (row?.kind === "clone" || ((row?.kind === "project" || row?.kind === "space") && row.path));
+    const tab = repoRow ? "⇥ branches" : row?.kind === "stack" ? "⇥ choose" : row?.kind === "org" ? "⇥ search" : kind === "actions" ? (row?.argv ? "⇥ saved prompts" : null) : row && kind !== "prompts" && hasActions(row) ? "⇥ actions" : null;
+    const parts = [kind === "actions" ? "↵ do it · type a prompt for the agent" : "↵ open", tab, kind === "branches" || kind === "org" ? "⌃R fetch" : null, "esc back"];
     return parts.filter(Boolean).join("   ");
   }
 

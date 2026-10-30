@@ -23,7 +23,7 @@ theme's `popover` color with 16px padding and 13px text. Top to bottom:
 
 Badges: `open` a Space, `new` a checkout with no Space, `clone`, `link`, `tree` a
 worktree, `local` and `remote` branches, `create` a new branch, `base` a ticket's
-starting point, `gone` a worktree missing on disk, `do` an action, `prompt`, `stack`.
+starting point, `gone` a worktree missing on disk, `do` an action, `prompt`, `stack`, `org`.
 
 While work runs the rows give way to a checklist, one 26px line per step: `◐` in
 `working`, `✓` in `done` with seconds taken, `✕` in `blocked`, with the reason in
@@ -40,8 +40,9 @@ list. An open agent's Space shows up as an `open` row like any other.
 - **Typing** filters by subsequence over name, then detail. `up` and `down` move.
 - **`enter`** opens the row with no agent, unless `agent.enabled` is set.
 - **`tab`** goes deeper: on a repo, its worktrees and branches; on any other row, an
-  action level with Open, a Start row per installed agent, and on a pull request in
-  a stack, Whole stack. Typing at the action level is a prompt for the agent. `tab`
+  action level with Open, a Start row per installed agent (Herdr's, plus any in the
+  config's `agents` found on this machine), and on a pull request in a stack, Whole
+  stack. Typing at the action level is a prompt for the agent. `tab`
   on a Start row lists saved prompts.
 - **`shift-tab` and `esc`** go back with the filter intact, or close at the top.
   `esc` during a job ends it.
@@ -49,6 +50,11 @@ list. An open agent's Space shows up as an `open` row like any other.
 - **Pasted text** replaces the list with one row: a GitHub PR, issue or repo URL
   with or without `https://`, `owner/repo`, `owner/repo#42`, or a Linear URL. An
   open Space for it is offered instead. A missing repo is cloned first.
+- **`org:`** lists you and your orgs at once, and `org:ph` narrows them, with a row
+  for any other name. Arrows move, and `tab` or `enter` goes in.
+- **`org:name` or `name/`** offers one `org` row, and nothing is fetched until it's
+  picked. Its repos then list newest push first, as `open`, `new` or `clone`, saved
+  for a day in shared state `phin-picker.orgs`. `ctrl-r` refreshes.
 - **A name no branch has** at the branch level becomes a `create` row, based on the
   default branch.
 - **Clicks** on a row act like `enter`.
@@ -111,3 +117,53 @@ Settings are `~/.config/phin-tech/picker/config.json`, saved prompts are `.md` o
 - `tab` on a PR in a stack offers Whole stack, which opens one Space with tabs
   `L1 #n`, `L2 #n` and the pasted PR focused.
 - `tab` on a Start row lists prompts, and picking one starts that agent with it.
+
+## Updating
+
+An installed copy's version is `version` in `mods/phin-picker/mod.json`. No version
+means a new install: copy both mods in, merge `keys.json`, and skip the Changelog.
+Otherwise:
+
+1. Read the Changelog below for every version newer than the installed one, and
+   tell the person what changes, especially anything under **You need to**.
+2. Replace `mods/phin-picker/` and `mods/phin-worktrees/` with this repo's. If the
+   person edited them, keep their version aside first, as a mod with a new name.
+3. Do what **You need to** says. Settings and saved prompts live in
+   `~/.config/phin-tech/picker/`, so a replace leaves them alone.
+4. Done when `herdr-app check` passes on both mods.
+
+## Changelog
+
+Newest first. Each version is one that was pushed.
+
+### 0.4.0 (2026-10-30)
+
+- `org:name` or `name/` lists a GitHub org's or user's repos, only when picked, and
+  saves the list for a day. `orgs` in the config adds a permanent Search row, and
+  `org:` completes against you and the orgs you belong to.
+- `agents` in the config adds agents by command or path. Each is offered only on a
+  machine that has it.
+
+### 0.3.0 (2026-10-30)
+
+- Whole stack: `tab` on a PR in a stack opens one Space with a tab per layer.
+- `owner/repo#42` works, and a link to a repo you don't have clones it first.
+- Repos rank by how often and how recently you use them.
+- Reopening a PR fast-forwards its worktree, or warns if there's local work.
+- Fork PRs open on `pr-N`, and merged PRs with deleted branches still open.
+- Bad config no longer blanks the picker. Long jobs have a 15 minute limit.
+
+### 0.2.0 (2026-10-30)
+
+- `enter` opens with no agent, and `tab` offers what to do: Open, a Start row per
+  agent, a typed prompt, or a saved prompt. `ctrl+a` is gone.
+- Built-in prompts, and your own in `~/.config/phin-tech/picker/prompts/`.
+
+**You need to:** move `~/.config/phin-picker/config.json` to
+`~/.config/phin-tech/picker/config.json` if it exists, and set `agent.enabled` to
+true to keep `enter` starting an agent.
+
+### 0.1.0 (2026-10-30)
+
+- First version: repos, worktrees and branches, PR, issue and Linear links, and
+  cloning.

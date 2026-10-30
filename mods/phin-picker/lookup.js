@@ -192,6 +192,53 @@ export async function lookupStacks(io, t) {
   }
 }
 
+// The config's agents that exist on this machine, so one config can travel. `sh`
+// checks, because fs/promises can't see outside home and paths are often there.
+export async function configuredAgents(io, cfg) {
+  const found = [];
+  for (const agent of cfg.agents) {
+    const run = [expandHome(agent.run[0], io.home), ...agent.run.slice(1)];
+    const check = run[0].includes("/") ? `test -x "$1"` : `command -v "$1" >/dev/null`;
+    const r = await io.exec("sh", ["-c", check, "sh", run[0]]).catch(() => ({ code: 1 }));
+    if (r.code === 0) found.push({ name: agent.name, run });
+  }
+  return found;
+}
+
+const ORG_FRESH_MS = 24 * 60 * 60 * 1000;
+
+// A list from `cached` while it's under a day old. A failed refresh falls back to
+// what's cached, with `stale` saying why. Answers `{ entry, stale, fetched }`.
+async function cachedList(fetchList, { cached, now, force = false }) {
+  if (cached && !force && now - cached.at < ORG_FRESH_MS) return { entry: cached, fetched: false };
+  try {
+    return { entry: { at: now, repos: await fetchList() }, fetched: true };
+  } catch (e) {
+    if (!cached) throw e;
+    return { entry: cached, fetched: false, stale: e.message };
+  }
+}
+
+async function gh(io, args) {
+  const r = await io.exec("gh", args);
+  if (r.code !== 0) throw new Error(r.stderr.trim() || `gh ${args[0]} failed`);
+  return r.stdout;
+}
+
+export function orgRepos(io, org, cache) {
+  const args = ["repo", "list", org, "--limit", "1000", "--no-archived", "--json", "name,description,pushedAt"];
+  return cachedList(async () => JSON.parse(await gh(io, args)), cache);
+}
+
+// You, then every org you belong to. Your own repos list the same way an org's do.
+export function myOrgs(io, cache) {
+  return cachedList(async () => {
+    const me = (await gh(io, ["api", "user", "--jq", ".login"])).trim();
+    const orgs = (await gh(io, ["api", "user/orgs", "--paginate", "--jq", ".[].login"])).split("\n").filter(Boolean);
+    return [me, ...orgs.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }))];
+  }, cache);
+}
+
 const LONG_LIMIT_MS = 15 * 60 * 1000;
 
 // exec stops at 30 s, too short for a clone or a fetch, so slow work runs in a

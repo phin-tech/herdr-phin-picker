@@ -1,1 +1,1 @@
-{ "place": "none", "title": "Open a project", "overlay": { "kind": "popup", "at": "top", "offset": 40, "width": 760, "height": 0.7 } }
+{ "version": "0.4.0", "place": "none", "title": "Open a project", "overlay": { "kind": "popup", "at": "top", "offset": 40, "width": 760, "height": 0.7 } }

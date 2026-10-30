@@ -53,9 +53,21 @@ export function parseConfig(text) {
   const templates = pick("repos", "templates", strings, DEFAULTS.repos.templates);
   const prompts = pick("agent", "prompts", isObject, {});
   const roots = pick("projects", "roots", strings, null) ?? deriveRoots(templates);
+  const orgs = Array.isArray(file.orgs) && file.orgs.every((o) => typeof o === "string" && o) ? file.orgs : [];
+  if (file.orgs !== undefined && orgs.length !== file.orgs?.length) bad.push("orgs");
   const depth = pick("projects", "depth", (v) => Number.isInteger(v) && v >= 1, DEFAULTS.projects.depth);
+  const argvOf = (v) => (typeof v === "string" && v ? [v] : strings(v) ? v : null);
+  const rawAgents = isObject(file.agents) ? file.agents : {};
+  if (file.agents !== undefined && !isObject(file.agents)) bad.push("agents");
+  const agents = Object.entries(rawAgents).flatMap(([name, value]) => {
+    const run = argvOf(value);
+    if (!run) bad.push(`agents.${name}`);
+    return run ? [{ name, run }] : [];
+  });
   const cfg = {
     repos: { templates },
+    orgs,
+    agents,
     agent: {
       enabled: pick("agent", "enabled", (v) => typeof v === "boolean", DEFAULTS.agent.enabled),
       argv: pick("agent", "argv", strings, DEFAULTS.agent.argv),

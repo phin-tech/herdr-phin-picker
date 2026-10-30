@@ -6,7 +6,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, existsSync, rmSync, symlinkSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { defaultBranch, discover, findRepo, isPullRequest, listBranches, loadPrompts, lookupStacks, repoOf, runLong } from "../mods/phin-picker/lookup.js";
+import { configuredAgents, defaultBranch, discover, findRepo, isPullRequest, listBranches, loadPrompts, lookupStacks, myOrgs, orgRepos, repoOf, runLong } from "../mods/phin-picker/lookup.js";
 import { openRow } from "../mods/phin-picker/actions.js";
 import { parseConfig } from "../mods/phin-picker/config.js";
 import { DEFAULT_PROMPTS } from "../mods/phin-picker/prompts.js";
@@ -457,6 +457,59 @@ test("GitHub says whether a number is a PR or an issue", async () => {
   assert.equal(await isPullRequest(answer('{"pull_request":{}}'), t), true);
   assert.equal(await isPullRequest(answer("{}"), t), false);
   await assert.rejects(isPullRequest(answer("", 1), t), /a\/b#1: Not Found/);
+});
+
+test("an org is cached for a day, and only a refresh or age asks GitHub", async () => {
+  let asked = 0;
+  const gh = (result) => ({ exec: async () => { asked += 1; return result; } });
+  const ok = gh({ code: 0, stdout: '[{"name":"x"}]', stderr: "" });
+  const hour = 3600000;
+
+  const first = await orgRepos(ok, "acme", { now: 0 });
+  assert.equal(asked, 1);
+  assert.ok(first.fetched);
+
+  const cached = first.entry;
+  assert.equal((await orgRepos(ok, "acme", { cached, now: 23 * hour })).fetched, false);
+  assert.equal(asked, 1, "a fresh cache makes no call");
+
+  await orgRepos(ok, "acme", { cached, now: 25 * hour });
+  assert.equal(asked, 2, "a stale one asks");
+  await orgRepos(ok, "acme", { cached, now: hour, force: true });
+  assert.equal(asked, 3, "ctrl+r asks");
+});
+
+test("a failed refresh keeps the saved list and says why; with none it fails", async () => {
+  const down = { exec: async () => ({ code: 1, stdout: "", stderr: "no network" }) };
+  const cached = { at: 0, repos: [{ name: "x" }] };
+  const r = await orgRepos(down, "acme", { cached, now: 0, force: true });
+  assert.equal(r.entry, cached);
+  assert.equal(r.fetched, false);
+  assert.equal(r.stale, "no network");
+  await assert.rejects(orgRepos(down, "acme", { now: 0 }), /no network/);
+});
+
+test("a configured agent only counts if it's on this machine", async () => {
+  const tool = join(home, "bin-tool");
+  writeFileSync(tool, "#!/bin/sh\n");
+  execFileSync("chmod", ["+x", tool]);
+  const plain = join(home, "not-executable");
+  writeFileSync(plain, "");
+  const cfgWith = parseConfig(JSON.stringify({ agents: { home: "~/bin-tool", absolute: [tool, "--x"], onPath: "sh", plain, gone: "~/nope", missing: "no-such-program-here" } }));
+  const found = await configuredAgents(io, cfgWith);
+  assert.deepEqual(found, [{ name: "home", run: [tool] }, { name: "absolute", run: [tool, "--x"] }, { name: "onPath", run: ["sh"] }]);
+});
+
+test("your orgs: you first, then the rest sorted, cached the same way", async () => {
+  let asked = 0;
+  const fake = { exec: async (_c, args) => {
+    asked += 1;
+    return { code: 0, stderr: "", stdout: args[1] === "user" ? "me\n" : "zeta\nAcme\nbeta\n" };
+  } };
+  const first = await myOrgs(fake, { now: 0 });
+  assert.deepEqual(first.entry.repos, ["me", "Acme", "beta", "zeta"]);
+  assert.equal((await myOrgs(fake, { cached: first.entry, now: 1000 })).fetched, false);
+  assert.equal(asked, 2);
 });
 
 test("no agent starts nothing", async () => {

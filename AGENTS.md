@@ -45,6 +45,11 @@ Done when all three pass, in this order:
 `actions.js` take the outside world as `io` and `ctx`. Keep new logic in these so
 Node can test it, and keep `main.js` to the UI.
 
+Every pushed change bumps `version` in `mods/phin-picker/mod.json` and adds an entry
+to the Changelog in `RECIPE.md`, since that's what installed copies update from. Say
+under **You need to** anything a person or their agent must do by hand. `npm test`
+fails if the two versions differ.
+
 The installed mods are symlinks to this repo, so saving a file changes the
 running app.
 

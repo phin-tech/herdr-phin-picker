@@ -78,6 +78,12 @@ own row.
 Reopening a PR fast-forwards its worktree. If it has local commits or uncommitted
 changes it's left alone, and a toast and the agent's prompt both say it's behind.
 
+To browse a GitHub org or user, type `org:acme` or `acme/` and press `enter` on the
+Search row. `org:` lists your account and orgs as you type, so `org:ph` narrows them
+and arrows pick one. No repos are read until you pick. The list is saved for a day, and `ctrl+r`
+refreshes it. Repos you have show as usual, and the rest can be cloned. Names in
+`orgs` get a Search row at the bottom of your projects.
+
 Type a name that matches no branch and you get a row that creates it, based on
 the default branch.
 
@@ -90,12 +96,25 @@ one and leave it unsent.
 
 ## Configuration
 
+The `tab` level lists the agents Herdr knows are installed. Add others with `agents`
+in `config.json`, as a command or path, or as a list with its flags. The name is the
+Start row's label:
+
+```json
+{ "agents": { "omp": "~/.bun/bin/omp", "fast claude": ["claude", "--model", "sonnet"] } }
+```
+
+Each one is checked when the level opens, so an agent missing on this machine just
+isn't offered, and one config works across machines. An entry for a program Herdr
+already knows replaces its row.
+
 Everything lives in `~/.config/phin-tech/picker/`. `config.json` is optional, and
 so is every key in it:
 
 ```json
 {
   "repos": { "templates": ["~/src/{host}/{owner}/{repo}"] },
+  "orgs": ["acme"],
   "agent": {
     "enabled": false,
     "argv": ["claude"],

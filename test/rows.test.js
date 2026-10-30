@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { actionRows, hasActions, promptRows, stackRows, hasExactBranch, linearBaseRows, newBranchRow, parseBranches, parseQuery, parseWorktrees, projectRows, rank, resolveLink, spaceLabel, subsequence, worktreeRows } from "../mods/phin-picker/rows.js";
+import { actionRows, hasActions, mergeAgents, orgCompletions, orgPrefix, orgRow, orgRows, parseOrgQuery, promptRows, stackRows, hasExactBranch, linearBaseRows, newBranchRow, parseBranches, parseQuery, parseWorktrees, projectRows, rank, resolveLink, spaceLabel, subsequence, worktreeRows } from "../mods/phin-picker/rows.js";
 import { parse } from "../mods/phin-picker/target.js";
 
 const home = "/home/s";
@@ -124,6 +124,57 @@ test("a stack row per chain, and none for a lone PR", () => {
 test("owner/repo#42 is a ref at the project level only", () => {
   assert.equal(parseQuery("a/b#4", true).kind, "github_ref");
   assert.equal(parseQuery("a/b#4", false).kind, "plain");
+});
+
+test("asking for an org", () => {
+  for (const q of ["org:acme", "org acme", "ORG: acme", "acme/"]) assert.equal(parseOrgQuery(q), "acme", q);
+  for (const q of ["acme", "acme/roux", "org", "org:", "orgs/x y", ""]) assert.equal(parseOrgQuery(q), null, q);
+});
+
+test("org: is what's typed after it", () => {
+  for (const [q, want] of [["org:", ""], ["ORG:", ""], ["org:  ", ""], ["org:ph", "ph"], ["org: ph", "ph"]]) assert.equal(orgPrefix(q), want, q);
+  for (const q of ["org", "orgs:", "org:a b", "phin"]) assert.equal(orgPrefix(q), null, q);
+});
+
+test("org: completes your orgs, best match first, and offers any other name", () => {
+  const names = ["sam-phinizy", "Acme", "phin-tech"];
+  const labels = (p) => orgCompletions(p, names, () => undefined, 0).map((r) => r.org);
+  assert.deepEqual(labels(""), names, "all of them, for the arrows");
+  assert.deepEqual(labels("ph"), ["phin-tech", "sam-phinizy", "ph"]);
+  assert.deepEqual(labels("acme"), ["Acme"], "no extra row for an exact match");
+  assert.deepEqual(labels("zzz"), ["zzz"]);
+  assert.deepEqual(orgCompletions("", [], () => undefined, 0), [], "nothing yet while it loads");
+  const [row] = orgCompletions("acme", names, () => ({ at: 0, repos: [1] }), 0);
+  assert.equal(row.kind, "org");
+  assert.equal(row.detail, "1 repos, listed just now");
+});
+
+test("an org row says whether it's been listed, and when", () => {
+  assert.equal(orgRow("acme", undefined, 0).detail, "lists its repos from GitHub");
+  assert.equal(orgRow("acme", { at: 0, repos: [1, 2] }, 3 * 3600000).detail, "2 repos, listed 3h ago");
+  assert.equal(orgRow("acme", { at: 0, repos: [] }, 60000).detail, "0 repos, listed just now");
+});
+
+test("an org's repos reuse the rows you have, newest push first, and can be cloned", () => {
+  const cfg = { repos: { templates: ["~/src/{host}/{owner}/{repo}"] } };
+  const mine = { kind: "project", label: "have", path: "/home/s/src/github.com/acme/have" };
+  const open = { kind: "space", label: "on", path: "/home/s/src/github.com/acme/on", spaceId: "s" };
+  const rows = orgRows({ org: "acme", cfg, home, projects: [mine, open], repos: [
+    { name: "old", pushedAt: "2020-01-01", description: "" },
+    { name: "have", pushedAt: "2024-01-01" },
+    { name: "on", pushedAt: "2023-01-01" },
+    { name: "new", pushedAt: "2025-01-01", description: "Fresh" },
+  ] });
+  assert.deepEqual(rows.map((r) => [r.kind, r.label]), [["clone", "new"], ["project", "have"], ["space", "on"], ["clone", "old"]]);
+  assert.equal(rows[0].detail, "Fresh");
+  assert.equal(rows[3].detail, "clone to ~/src/github.com/acme/old");
+  assert.equal(rows[0].target.owner, "acme");
+});
+
+test("a configured agent joins the list, and replaces the same program", () => {
+  const known = [{ name: "Claude Code", run: ["claude"] }, { name: "Pi", run: ["pi"] }];
+  const merged = mergeAgents(known, [{ name: "omp", run: ["/x/omp"] }, { name: "my claude", run: ["/y/claude", "--flag"] }]);
+  assert.deepEqual(merged.map((a) => a.name), ["Pi", "omp", "my claude"]);
 });
 
 test("Space label for a worktree", () => {

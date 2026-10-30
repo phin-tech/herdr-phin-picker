@@ -25,6 +25,22 @@ test("wrong shapes fall back and say so, and never throw", () => {
   assert.equal(parseConfig('{"agent":3}').problem, null);
 });
 
+test("orgs start empty, and a bad list falls back", () => {
+  assert.deepEqual(parseConfig(null).orgs, []);
+  assert.deepEqual(parseConfig('{"orgs":["a","b"]}').orgs, ["a", "b"]);
+  const bad = parseConfig('{"orgs":"a"}');
+  assert.deepEqual(bad.orgs, []);
+  for (const v of ["null", "3", "[1]"]) assert.match(parseConfig(`{"orgs":${v}}`).problem, /orgs/, v);
+});
+
+test("agents take a path or a full command, and bad ones are named", () => {
+  assert.deepEqual(parseConfig(null).agents, []);
+  const c = parseConfig('{"agents":{"omp":"~/.bun/bin/omp","mine":["/x/y","--fast"],"bad":3}}');
+  assert.deepEqual(c.agents, [{ name: "omp", run: ["~/.bun/bin/omp"] }, { name: "mine", run: ["/x/y", "--fast"] }]);
+  assert.match(c.problem, /agents\.bad/);
+  assert.match(parseConfig('{"agents":"omp"}').problem, /agents/);
+});
+
 test("overrides merge, prompts by key", () => {
   const c = parseConfig('{"agent":{"enabled":true,"prompts":{"project":"hi"}},"projects":{"roots":["~/x"]}}');
   assert.equal(c.agent.enabled, true);
