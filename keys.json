@@ -1,0 +1,6 @@
+{
+  "global": {
+    "cmd-o": "mod.open:phin-picker",
+    "cmd-shift-o": "mod.open:phin-worktrees"
+  }
+}
