@@ -84,7 +84,7 @@ Settings are `~/.config/phin-tech/picker/config.json`, saved prompts are `.md` o
 
 ## Watch out
 
-- Herdr kills mod code that runs about a second without yielding, and QuickJS is 10
+- Herdr kills mod code that runs half a second without yielding, and QuickJS is 10
   to 30 times slower than Node. Keep loops linear on large lists.
 - `exec` stops at 30 seconds, so clones, fetches and `git worktree add` run in a
   core terminal with `hc run --bg`, and `hc wait` in a loop. It carries no
@@ -137,6 +137,11 @@ Otherwise:
 ## Changelog
 
 Newest first. Each version is one that was pushed.
+
+### 0.4.2 (2026-10-31)
+
+- Adds `"debug": true` for `config.json`, which writes what the picker does, with
+  timings, to `~/.config/phin-tech/picker/debug.log`. Off by default.
 
 ### 0.4.1 (2026-10-30)
 

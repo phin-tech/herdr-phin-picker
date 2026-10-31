@@ -3,6 +3,7 @@
 // { exec(cmd, args, opts), hc(args), readdir(path), readText(path), exists(path), home }.
 
 import { MAX_DEPTH, PROMPTS_PATH, expandHome, repoCandidates } from "./config.js";
+import { timed } from "./debug.js";
 import { DEFAULT_PROMPTS } from "./prompts.js";
 import { parseBranches, parseWorktrees } from "./rows.js";
 import { parseNativeStack, walkStacks } from "./stack.js";
@@ -183,7 +184,9 @@ export async function lookupStacks(io, t) {
     const layers = native.code === 0 ? parseNativeStack(native.stdout) : null;
     if (layers) return [layers];
     const r = await io.exec("gh", ["pr", "list", "--repo", `${t.owner}/${t.repo}`, "--state", "open", "--limit", "200", "--json", "number,title,url,headRefName,baseRefName,isCrossRepository"]);
-    return r.code === 0 ? walkStacks(JSON.parse(r.stdout), t.number) : [];
+    if (r.code !== 0) return [];
+    const prs = JSON.parse(r.stdout);
+    return timed(io.note ?? (() => {}), `walking ${prs.length} open PRs for a stack`, () => walkStacks(prs, t.number));
   } catch {
     return [];
   }

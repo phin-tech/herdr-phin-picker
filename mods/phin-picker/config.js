@@ -75,7 +75,9 @@ export function parseConfig(text) {
     },
     projects: { roots, git_only: pick("projects", "git_only", (v) => typeof v === "boolean", true), depth: Math.min(depth, MAX_DEPTH) },
     worktrees: { path: pick("worktrees", "path", text_, DEFAULTS.worktrees.path) },
+    debug: file.debug === true,
   };
+  if (file.debug !== undefined && typeof file.debug !== "boolean") bad.push("debug");
   if (bad.length) problem = `config.json: bad value for ${bad.join(", ")}; using defaults`;
   return { ...cfg, problem };
 }

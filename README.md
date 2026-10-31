@@ -186,6 +186,19 @@ including instructions aimed at your agent. Be especially careful with PRs from
 forks, and with prompts that run code, like `fix-ci`. A prompt saying "don't change
 anything" is only a request: use your agent's read-only mode when it matters.
 
+## Debugging
+
+If the picker hangs or misbehaves, add `"debug": true` to `config.json` and reopen
+it. The footer then says `debug log on`, and `~/.config/phin-tech/picker/debug.log`
+records every key that moves you around, command, step and timing. A line reading
+`start` with nothing after it is what it was stuck on, and `STALLED` means the picker's
+own code blocked for a moment.
+
+The log stays on your machine, only you can read it, and it stops at 1 MB. It holds no
+prompts or typed text, but it does name your repos, branches, folders and agents, and
+any error text from `git` or `gh`, so read it before sharing it. Remove the setting
+when you're done.
+
 ## Issues and contributing
 
 Report problems on [GitHub issues](https://github.com/phin-tech/herdr-phin-picker/issues).

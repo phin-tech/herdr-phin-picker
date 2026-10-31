@@ -31,6 +31,14 @@ time it opens. Done when `config.json` parses and the picker shows no ⚠ line.
 - To change which row a prompt suits, or add one for everyone, edit
   `mods/phin-picker/prompts.js`. Each `for` is a target kind or `local`.
 
+## Debugging a hang
+
+Set `"debug": true` in `config.json` and reproduce it, then read `debug.log` beside
+it from the end, by timestamp. A `: start` line with no matching end names what hung,
+and if it's a command, that command is slow. `STALLED 500ms` or so with no end line for
+what it names means Herdr killed the script there, which `herdr-app status` doesn't
+report. No `key tab` line means the key never reached the picker.
+
 ## Changing the code
 
 Done when all three pass, in this order:
@@ -85,8 +93,8 @@ argument.
 - **Imports stop at the mod's folder.** That's why `phin-worktrees` only opens
   `phin-picker` with props, and why a probe needs copies of the modules.
 - **`mod.open` takes no props.** A key can't choose a starting level.
-- **Mod code that runs about 1.2 seconds without yielding gets killed.** The error
-  is `interrupted`, `try` can't catch it, and the popup just sits there, which reads
+- **Mod code that runs half a second or more without yielding gets killed.** `try`
+  and `finally` don't run, timers keep going, and the popup just sits there, which reads
   as a freeze. QuickJS also runs 10 to 30 times slower than Node, so a benchmark in
   Node flatters you. Keep loops linear, measure in a mod, and yield with `await`.
 - **`exec` stops at 30 seconds.** Clones, fetches and `git worktree add` go through

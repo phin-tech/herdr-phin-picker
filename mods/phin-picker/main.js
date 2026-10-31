@@ -3,9 +3,10 @@
 
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { exec, hc, home, knownAgents, notify, panes, spaces, focused, props, closeOverlay, readTextFile, run, setShared, shared, theme } from "herdr";
+import { appHome, exec, hc, home, knownAgents, notify, panes, spaces, focused, props, closeOverlay, readTextFile, run, setShared, shared, theme } from "herdr";
 import { exists, readdir } from "fs/promises";
 import { CONFIG_PATH, parseConfig } from "./config.js";
+import { DEBUG_LOG_PATH, createTrace, timed, traced } from "./debug.js";
 import { promptsFor } from "./prompts.js";
 import { parse, resolveRef } from "./target.js";
 import { recordUse, scoreAt } from "./recent.js";
@@ -19,7 +20,7 @@ const BADGES = {
   branch: "local", remote_branch: "remote", new_branch: "create", linear_base: "base", prunable: "gone", action: "do", prompt: "prompt", stack: "stack", org: "org",
 };
 
-const io = {
+const plainIo = {
   exec,
   hc,
   // Throws outside home, where a mod can't read: to the picker that's just absent.
@@ -29,9 +30,17 @@ const io = {
   readdir: (path) => readdir(path, { withFileTypes: true }),
 };
 
+// Swapped for traced versions when the config turns debug on.
+let io = plainIo;
+let note = () => {};
+
+const STALL_CHECK_MS = 100;
+const STALL_MS = 300;
+
 // `run`, but it answers: a stack's tabs need the Space the first command made.
 async function command(name, args) {
-  const r = await exec("herdr-app", ["do", name, JSON.stringify(args)]);
+  // Plain exec: the arguments hold the prompt, which stays out of the log.
+  const r = await timed(note, `herdr-app do ${name}`, () => exec("herdr-app", ["do", name, JSON.stringify(args)]));
   const out = JSON.parse(r.stdout || "{}");
   if (r.code !== 0 || out.error) throw new Error(`${name}: ${out.error ?? r.stderr.trim()}`);
   return out;
@@ -73,9 +82,13 @@ export default class Picker extends View {
     this.problem = null;
     this.ticket = null;
 
+    io = plainIo;
+    note = () => {};
+
     cx.spawn(async (cx) => {
       this.cfg = parseConfig(await readTextFile(`${io.home}/${CONFIG_PATH}`).catch(() => null));
       this.problem = this.cfg.problem;
+      if (this.cfg.debug) this.startTrace(cx);
       try {
         if (props().start === "branches") {
           const folder = focused()?.cwd;
@@ -89,7 +102,7 @@ export default class Picker extends View {
             this.showProjects(cached);
             this.applyFilter(cx);
           }
-          const paths = await discover(io, this.cfg.projects);
+          const paths = await timed(note, "discovering projects", () => discover(io, this.cfg.projects), (found) => `${found.length} found in`);
           if (!cached || !sameList(cached, paths)) {
             setShared(PATHS, paths);
             this.showProjects(paths);
@@ -98,14 +111,39 @@ export default class Picker extends View {
           this.preload();
         }
       } catch (e) {
+        note(`opening failed: ${e.message}`);
         this.problem = e.message;
       }
       this.applyFilter(cx);
     });
   }
 
+  // A gap in the timer means script code was stuck, not a command. The timer
+  // outlives Herdr killing that code, so a kill shows up here too.
+  startTrace(cx) {
+    const trace = createTrace(exec, `${io.home}/${DEBUG_LOG_PATH}`);
+    note = trace.note;
+    io = traced(plainIo, note);
+    note("--- picker opened");
+    cx.spawn(async () => {
+      const mod = await readTextFile(`${appHome()}/mods/phin-picker/mod.json`).catch(() => "{}");
+      note(`picker ${JSON.parse(mod).version ?? "unknown"}, roots: ${this.cfg.projects.roots.join(" ")}, agents: ${this.cfg.agents.map((a) => a.name).join(" ")}`);
+      await io.exec("herdr-app", ["--version"]).then((r) => note(r.stdout.trim())).catch(() => {});
+      await io.exec("git", ["--version"]).then((r) => note(r.stdout.trim())).catch(() => {});
+      await io.exec("gh", ["--version"]).then((r) => note(r.stdout.split("\n")[0])).catch(() => {});
+      const status = await io.exec("herdr-app", ["status"]).catch(() => null);
+      note(`app errors: ${JSON.stringify(status ? JSON.parse(status.stdout).errors : "unknown")}`);
+    });
+    let last = Date.now();
+    cx.timer.every(STALL_CHECK_MS, () => {
+      const now = Date.now();
+      if (now - last > STALL_MS) note(`STALLED ${now - last}ms, after: ${trace.last}`);
+      last = now;
+    });
+  }
+
   showProjects(paths) {
-    const rows = projectRows({ spaces: spaces(), panes: panes(), paths, home: io.home, score: scorer() });
+    const rows = timed(note, `building rows for ${paths.length} projects`, () => projectRows({ spaces: spaces(), panes: panes(), paths, home: io.home, score: scorer() }));
     const orgs = this.cfg.orgs.map((org) => orgRow(org, orgCache(org), Date.now()));
     const all = [...rows, ...orgs];
     if (this.levels[0]?.kind === "projects") this.levels[0].all = all;
@@ -130,7 +168,7 @@ export default class Picker extends View {
 
   agents() {
     this.agentList ??= (async () => {
-      const known = await knownAgents().catch(() => []);
+      const known = await timed(note, "asking Herdr for agents", () => knownAgents().catch(() => []), (list) => `${list.length} known in`);
       return mergeAgents(known.filter((a) => a.installed), await configuredAgents(io, this.cfg));
     })();
     return this.agentList;
@@ -138,6 +176,7 @@ export default class Picker extends View {
 
   readRepo(folder) {
     if (!this.repoReads.has(folder)) {
+      note(`reading ${folder}`);
       const read = (async () => {
         const repo = await repoOf(io, folder);
         return { repo, ...(await listBranches(io, repo)) };
@@ -151,6 +190,7 @@ export default class Picker extends View {
   async close() {
     const job = this.job;
     this.job = null;
+    note(`closing${job ? `, killing ${job}` : ""}`);
     if (job) await exec("hc", ["kill", job]).then(() => exec("hc", ["rm", job])).catch(() => {});
     closeOverlay(props().overlay);
   }
@@ -161,7 +201,7 @@ export default class Picker extends View {
 
   async pushRepo(folder, root = false) {
     const { repo, worktrees, branches } = await this.readRepo(folder);
-    const found = worktreeRows({ worktrees, branches, repo, spaces: spaces(), panes: panes(), home: io.home });
+    const found = timed(note, `building rows for ${branches.length} branches, ${worktrees.length} worktrees`, () => worktreeRows({ worktrees, branches, repo, spaces: spaces(), panes: panes(), home: io.home }));
     const level = { kind: "branches", repo, found, all: this.ticket ? linearBaseRows(repo, this.ticket, found) : found, filter: "" };
     if (root) this.levels = [level];
     else this.levels.push(level);
@@ -215,7 +255,7 @@ export default class Picker extends View {
     else if (link) this.rows = [link];
     else if (!query) this.rows = level.all;
     else {
-      this.rows = rank(query, level.all);
+      this.rows = timed(note, `filtering ${level.all.length} rows`, () => rank(query, level.all));
       if (level.kind === "branches" && !this.ticket && !hasExactBranch(level.all, query)) this.rows = [...this.rows, newBranchRow(level.repo, query)];
     }
     cx.notify();
@@ -232,7 +272,7 @@ export default class Picker extends View {
         this.steps.push(s);
         cx.notify();
         try {
-          const out = await fn();
+          const out = await timed(note, `step "${label}"`, fn);
           s.state = "done";
           s.secs = (Date.now() - s.started) / 1000;
           cx.notify();
@@ -243,19 +283,27 @@ export default class Picker extends View {
         }
       };
       const warn = (title, body) => notify({ title, body, level: "warning" });
-      const ctx = { io, cfg: this.cfg, run, command, spaces, argv, prompt, step, warn, used, onJob: (t) => { this.job = t; } };
+      const noted = (name, args) => { note(`run ${name}`); run(name, args); };
+      const ctx = { io, cfg: this.cfg, run: noted, command, spaces, argv, prompt, step, warn, used, onJob: (t) => { this.job = t; } };
       try {
         if (await work(ctx)) return closeOverlay(props().overlay);
         this.steps = null;
         this.applyFilter(cx);
       } catch (e) {
+        note(`failed: ${e.message}`);
         this.problem = e.message;
       }
       cx.notify();
     });
   }
 
+  noteChoice(what) {
+    const row = this.rows[this.at];
+    note(`${what}: level=${this.level?.kind} row=${row?.kind ?? "none"} ${row?.label ?? ""}${this.steps ? " (busy)" : ""}`);
+  }
+
   submit(cx) {
+    this.noteChoice("enter");
     const row = this.rows[this.at];
     if (!row || this.steps) return;
     // A ticket names no repository, so the next pick is the repository.
@@ -280,6 +328,7 @@ export default class Picker extends View {
   }
 
   descend(cx) {
+    this.noteChoice("tab");
     const row = this.rows[this.at];
     if (!row || this.steps) return;
     if (row.kind === "link" && row.target.kind === "linear") return this.takeTicket(row, cx);
@@ -394,7 +443,7 @@ export default class Picker extends View {
     const kind = this.level?.kind;
     const repoRow = (kind === "projects" || kind === "org") && (row?.kind === "clone" || ((row?.kind === "project" || row?.kind === "space") && row.path));
     const tab = repoRow ? "⇥ branches" : row?.kind === "stack" ? "⇥ choose" : row?.kind === "org" ? "⇥ search" : kind === "actions" ? (row?.argv ? "⇥ saved prompts" : null) : row && kind !== "prompts" && hasActions(row) ? "⇥ actions" : null;
-    const parts = [kind === "actions" ? "↵ do it · type a prompt for the agent" : "↵ open", tab, kind === "branches" || kind === "org" ? "⌃R fetch" : null, "esc back"];
+    const parts = [kind === "actions" ? "↵ do it · type a prompt for the agent" : "↵ open", tab, kind === "branches" || kind === "org" ? "⌃R fetch" : null, "esc back", this.cfg?.debug ? "debug log on" : null];
     return parts.filter(Boolean).join("   ");
   }
 
@@ -435,6 +484,7 @@ export default class Picker extends View {
     return v_flex().id("phin-picker").track_focus(this.handle).size_full().min_h(0).p(16).gap(10).bg(t.popover).text_size(13)
       .on_key_down((e, cx) => {
         const n = this.rows.length;
+        if (e.key.length > 1 || e.modifiers.control) note(`key ${e.modifiers.control ? "ctrl-" : ""}${e.modifiers.shift ? "shift-" : ""}${e.key}`);
         if (e.key === "escape") this.ascend(cx);
         else if (e.key === "down" && n) this.at = (this.at + 1) % n;
         else if (e.key === "up" && n) this.at = (this.at + n - 1) % n;
