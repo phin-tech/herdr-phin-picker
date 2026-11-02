@@ -138,6 +138,11 @@ Otherwise:
 
 Newest first. Each version is one that was pushed.
 
+### 0.4.4 (2026-11-02)
+
+- Leaves `esc` to Herdr, so it closes the picker. The 0.4.3 tag bound it by mistake
+  and was never released, so this is the release of everything listed under 0.4.3.
+
 ### 0.4.3 (2026-11-02)
 
 - Fixes `tab` and `shift-tab` doing nothing on recent Herdr, which left the picker

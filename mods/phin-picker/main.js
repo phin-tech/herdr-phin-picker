@@ -85,12 +85,11 @@ const BACK = "phin-picker.back";
 export default class Picker extends View {
   init(_props, cx) {
     this.handle = cx.focus_handle();
-    // Tab and Esc as keys never get here: the window moves focus and Herdr closes the
-    // popup. A binding inside the picker comes first, and means this only in the picker.
+    // Tab as a key never gets here: the window takes it to move focus. A binding inside
+    // the picker comes first, and the same chord only means this inside the picker.
     cx.bind_keys([
       { keystroke: "tab", action: DEEPER, context: KEYS },
       { keystroke: "shift-tab", action: BACK, context: KEYS },
-      { keystroke: "escape", action: BACK, context: KEYS },
     ]);
     this.input = InputState.new({ placeholder: "Filter, or paste a link…" });
     this.input.on("change", (_e, cx) => this.applyFilter(cx));
@@ -640,11 +639,12 @@ export default class Picker extends View {
 
     return v_flex().id("phin-picker").track_focus(this.handle).key_context(KEYS).size_full().min_h(0).p(16).gap(10).bg(t.popover).text_size(13)
       .on_action(DEEPER, (_e, cx) => { note("key tab"); this.descend(cx); cx.notify(); })
-      .on_action(BACK, (_e, cx) => { note("key back"); this.ascend(cx); cx.notify(); })
+      .on_action(BACK, (_e, cx) => { note("key shift-tab"); this.ascend(cx); cx.notify(); })
       .on_key_down((e, cx) => {
         const n = this.rows.length;
         if (e.key.length > 1 || e.modifiers.control) note(`key ${e.modifiers.control ? "ctrl-" : ""}${e.modifiers.shift ? "shift-" : ""}${e.key}`);
-        if (e.key === "down" && n) this.at = (this.at + 1) % n;
+        if (e.key === "escape") this.ascend(cx);
+        else if (e.key === "down" && n) this.at = (this.at + 1) % n;
         else if (e.key === "up" && n) this.at = (this.at + n - 1) % n;
         else if (e.key === "r" && e.modifiers.control) this.refresh(cx);
         else return;
