@@ -9,9 +9,10 @@ import { CONFIG_PATH, parseConfig } from "./config.js";
 import { DEBUG_LOG_PATH, createTrace, timed, traced } from "./debug.js";
 import { promptsFor } from "./prompts.js";
 import { parse, resolveRef } from "./target.js";
+import { actionArgv, matchProvider, parseProvider, parseRows, rememberRows } from "./providers.js";
 import { recordUse, scoreAt } from "./recent.js";
 import { configuredAgents, discover, findRepo, isPullRequest, listBranches, loadPrompts, lookupStacks, myOrgs, orgRepos, repoOf, runLong } from "./lookup.js";
-import { actionRows, mergeAgents, hasActions, hasExactBranch, linearBaseRows, newBranchRow, orgCompletions, orgPrefix, orgRow, orgRows, parseOrgQuery, parseQuery, projectRows, promptRows, rank, resolveLink, sameList, stackRows, worktreeRows } from "./rows.js";
+import { actionRows, mergeAgents, hasActions, hasExactBranch, linearBaseRows, newBranchRow, orgCompletions, orgPrefix, orgRow, orgRows, openingKey, openingRows, parseOrgQuery, parseQuery, projectRows, promptRows, rank, resolveLink, sameList, stackRows, worktreeRows } from "./rows.js";
 import { cloneRepo, openRow } from "./actions.js";
 
 const VISIBLE = 14;
@@ -54,6 +55,19 @@ const rememberOrg = (org, entry) => setShared(ORGS, { ...shared(ORGS), [org.toLo
 const PATHS = "phin-picker.paths";
 const PRELOADED_REPOS = 4;
 
+// What the last opening ended with, so the next one paints before reading anything.
+const OPENING = "phin-picker.opening";
+const FIRST_PAINT_MS = 20;
+// Refreshing shares the script with the box, so it waits until you've had a moment
+// to type. A key can't be drawn while the script is busy.
+const REFRESH_AFTER_MS = 1000;
+
+// Lets Herdr run between steps: it kills a script that holds on for half a second.
+const breathe = (cx) => new Promise((done) => cx.timer.after(1, done));
+
+const PROVIDERS = "phin-picker.providers";
+const PROVIDED = "phin-picker.provided";
+
 const RECENT = "phin-picker.recent";
 const recent = () => shared(RECENT) ?? {};
 const used = (path) => setShared(RECENT, recordUse(recent(), path, Date.now()));
@@ -64,9 +78,20 @@ function scorer() {
   return (path) => scoreAt(seen[path], now);
 }
 
+const KEYS = "PhinPicker";
+const DEEPER = "phin-picker.deeper";
+const BACK = "phin-picker.back";
+
 export default class Picker extends View {
   init(_props, cx) {
     this.handle = cx.focus_handle();
+    // Tab and Esc as keys never get here: the window moves focus and Herdr closes the
+    // popup. A binding inside the picker comes first, and means this only in the picker.
+    cx.bind_keys([
+      { keystroke: "tab", action: DEEPER, context: KEYS },
+      { keystroke: "shift-tab", action: BACK, context: KEYS },
+      { keystroke: "escape", action: BACK, context: KEYS },
+    ]);
     this.input = InputState.new({ placeholder: "Filter, or paste a link…" });
     this.input.on("change", (_e, cx) => this.applyFilter(cx));
     this.input.on("submit", (_e, cx) => this.submit(cx));
@@ -85,7 +110,32 @@ export default class Picker extends View {
     io = plainIo;
     note = () => {};
 
+    // Saved, so a prefix typed right away is recognised before the scan below ends.
+    this.providers = shared(PROVIDERS) ?? [];
+    this.provided = new Map();
     cx.spawn(async (cx) => {
+      if (this.providers.length) await new Promise((done) => cx.timer.after(REFRESH_AFTER_MS, done));
+      const mods = `${appHome()}/mods`;
+      const names = (await io.readdir(mods).catch(() => [])).map((e) => e.name);
+      const found = await Promise.all(names.map(async (name) => parseProvider(name, await io.readText(`${mods}/${name}/mod.json`).catch(() => null))));
+      const providers = found.filter(Boolean);
+      if (JSON.stringify(providers) !== JSON.stringify(this.providers)) setShared(PROVIDERS, providers);
+      this.providers = providers;
+      if (matchProvider(this.input.value(), providers)) this.applyFilter(cx);
+    });
+
+    const opening = props()?.start === "branches" ? null : shared(OPENING);
+    if (opening) {
+      this.cfg = opening.cfg;
+      this.spaceRows = projectRows({ spaces: spaces(), panes: panes(), paths: [], home: io.home, score: scorer() });
+      const all = openingRows(this.spaceRows, opening.rows);
+      this.levels = [{ kind: "projects", all, filter: "" }];
+      this.rows = all;
+    }
+
+    cx.spawn(async (cx) => {
+      // The work below holds the script, so the saved list has to land first.
+      if (opening) await new Promise((done) => cx.timer.after(FIRST_PAINT_MS, done));
       this.cfg = parseConfig(await readTextFile(`${io.home}/${CONFIG_PATH}`).catch(() => null));
       this.problem = this.cfg.problem;
       if (this.cfg.debug) this.startTrace(cx);
@@ -98,15 +148,24 @@ export default class Picker extends View {
         } else {
           // Last time's list now, then a fresh scan behind it, so opening is instant.
           const cached = shared(PATHS);
-          if (cached) {
+          if (opening) await new Promise((done) => cx.timer.after(REFRESH_AFTER_MS, done));
+          else if (cached) {
             this.showProjects(cached);
-            this.applyFilter(cx);
+            this.refilterKeepingRow(cx);
           }
           const paths = await timed(note, "discovering projects", () => discover(io, this.cfg.projects), (found) => `${found.length} found in`);
-          if (!cached || !sameList(cached, paths)) {
-            setShared(PATHS, paths);
+          if (!cached || !sameList(cached, paths)) setShared(PATHS, paths);
+          const key = openingKey(paths, this.spaceRows ?? [], recent());
+          const changed = opening?.key !== key || JSON.stringify(opening.cfg) !== JSON.stringify(this.cfg);
+          // Past this list, or on the way, a rebuild only gets in the way. The next opening does it.
+          if (changed && this.levels.length <= 1 && !this.steps) {
+            await breathe(cx);
             this.showProjects(paths);
+            await breathe(cx);
             this.refilterKeepingRow(cx);
+            await breathe(cx);
+            this.saveOpening(key);
+            await breathe(cx);
           }
           this.preload();
         }
@@ -114,7 +173,8 @@ export default class Picker extends View {
         note(`opening failed: ${e.message}`);
         this.problem = e.message;
       }
-      this.applyFilter(cx);
+      if (this.level?.kind === "projects") cx.notify();
+      else this.applyFilter(cx);
     });
   }
 
@@ -148,6 +208,12 @@ export default class Picker extends View {
     const all = [...rows, ...orgs];
     if (this.levels[0]?.kind === "projects") this.levels[0].all = all;
     else this.levels = [{ kind: "projects", all, filter: "" }];
+  }
+
+  // Only when it changed: setShared re-renders every mod.
+  saveOpening(key) {
+    const next = { key, cfg: this.cfg, rows: this.levels[0].all };
+    if (JSON.stringify(shared(OPENING)) !== JSON.stringify(next)) setShared(OPENING, next);
   }
 
   refilterKeepingRow(cx) {
@@ -207,9 +273,83 @@ export default class Picker extends View {
     else this.levels.push(level);
   }
 
+  // Where a provider's command runs: the focused pane's folder, on its machine.
+  focusedFolder() {
+    const space = spaces().find((s) => s.active), f = focused();
+    const pane = f?.pane ? panes().find((p) => p.pane === f.pane) : null;
+    return { cwd: pane?.cwd || f?.cwd || space?.folder, on: space?.machine ?? null };
+  }
+
+  // A prefix a mod registered: its rows, filtered like any others. Asked once per opening.
+  filterProvider({ provider, query }, cx) {
+    this.at = 0;
+    const { cwd, on } = this.focusedFolder(), key = `${provider.mod}:${on}:${cwd}`;
+    const loaded = this.provided.get(key);
+    const rows = loaded?.rows ?? shared(PROVIDED)?.[key];
+    this.providerCwd = cwd;
+    this.problem = loaded ? loaded.error ?? (rows.length ? null : `${provider.title}: nothing in this folder`) : null;
+    this.rows = rows ? (query ? rank(query, rows) : rows) : [];
+    cx.notify();
+    if (loaded || this.providerLoading === key) return;
+    this.providerLoading = key;
+    cx.spawn(async (cx) => {
+      const [tool, ...args] = provider.rows;
+      try {
+        const r = await io.exec(tool, args, { cwd, on });
+        if (r.code !== 0) throw new Error(r.stderr.trim().split("\n")[0] || `${tool} exited ${r.code}`);
+        const fresh = parseRows(r.stdout);
+        this.provided.set(key, { rows: fresh });
+        const saved = rememberRows(shared(PROVIDED), key, fresh);
+        if (saved) setShared(PROVIDED, saved);
+      } catch (e) {
+        this.provided.set(key, { rows: [], error: `${provider.title}: ${e.message}` });
+      }
+      this.providerLoading = null;
+      // The fresh list can reorder what's on screen; enter must still mean the same row.
+      const picked = this.rows[this.at];
+      this.applyFilter(cx);
+      const still = this.rows.findIndex((r) => r.label === picked?.label && r.badge === picked?.badge);
+      if (still >= 0) this.at = still;
+    });
+  }
+
+  // The provider's own command does the work. Closing would cancel this task, so it's last.
+  runAction(action, text, cx) {
+    const [tool, ...args] = actionArgv(action, text);
+    cx.spawn(async (cx) => {
+      try {
+        const r = await io.exec(tool, args);
+        if (r.code !== 0) throw new Error(r.stderr.trim().split("\n")[0] || `${tool} exited ${r.code}`);
+        await this.close();
+      } catch (e) {
+        this.problem = e.message;
+        cx.notify();
+      }
+    });
+  }
+
+  // Tab on a provider's row, or enter on one that can't run without arguments.
+  openActions(row, cx) {
+    this.levels.push({ kind: "provider_actions", name: [row.label, row.args].filter(Boolean).join(" "), task: row, all: row.actions, filter: "" });
+    this.input.set_value("");
+    this.applyFilter(cx);
+  }
+
   applyFilter(cx) {
     const level = this.level;
     if (!level) return cx.notify();
+    const provided = this.levels.length === 1 ? matchProvider(this.input.value(), this.providers) : null;
+    this.providerTitle = provided?.provider.title ?? null;
+    if (provided) {
+      level.filter = this.input.value();
+      return this.filterProvider(provided, cx);
+    }
+    // The box holds arguments here, so nothing filters.
+    if (level.kind === "provider_actions") {
+      this.at = Math.min(this.at, level.all.length - 1);
+      this.rows = level.all;
+      return cx.notify();
+    }
     const query = this.input.value().trim();
     level.filter = query;
     this.at = 0;
@@ -303,6 +443,16 @@ export default class Picker extends View {
   }
 
   submit(cx) {
+    const chosen = this.rows[this.at];
+    if (chosen?.kind === "provider") return chosen.needs ? this.openActions(chosen, cx) : this.runAction(chosen.actions[0], "", cx);
+    if (chosen?.kind === "provider_action") {
+      const text = this.input.value().trim();
+      if (this.level.task.needs && !text) {
+        this.problem = `${this.level.task.label} needs: ${this.level.task.args}`;
+        return cx.notify();
+      }
+      return this.runAction(chosen, text, cx);
+    }
     this.noteChoice("enter");
     const row = this.rows[this.at];
     if (!row || this.steps) return;
@@ -330,7 +480,8 @@ export default class Picker extends View {
   descend(cx) {
     this.noteChoice("tab");
     const row = this.rows[this.at];
-    if (!row || this.steps) return;
+    if (row?.kind === "provider") return this.openActions(row, cx);
+    if (!row || this.steps || row.kind === "provider_action") return;
     if (row.kind === "link" && row.target.kind === "linear") return this.takeTicket(row, cx);
     if (this.level.kind === "prompts") return;
     if (row.kind === "stack") return this.pushActions(row, cx);
@@ -443,11 +594,14 @@ export default class Picker extends View {
     const kind = this.level?.kind;
     const repoRow = (kind === "projects" || kind === "org") && (row?.kind === "clone" || ((row?.kind === "project" || row?.kind === "space") && row.path));
     const tab = repoRow ? "⇥ branches" : row?.kind === "stack" ? "⇥ choose" : row?.kind === "org" ? "⇥ search" : kind === "actions" ? (row?.argv ? "⇥ saved prompts" : null) : row && kind !== "prompts" && hasActions(row) ? "⇥ actions" : null;
+    if (row?.kind === "provider") return `${row.needs ? "↵ add arguments" : "↵ run"}   ⇥ options   esc close`;
+    if (row?.kind === "provider_action") return "↵ run · type arguments first   esc back";
     const parts = [kind === "actions" ? "↵ do it · type a prompt for the agent" : "↵ open", tab, kind === "branches" || kind === "org" ? "⌃R fetch" : null, "esc back", this.cfg?.debug ? "debug log on" : null];
     return parts.filter(Boolean).join("   ");
   }
 
   title() {
+    if (this.providerTitle) return `${this.providerTitle}${this.providerLoading ? " · refreshing…" : ""}`;
     const names = this.levels.map((l) => l.name ?? l.repo?.name).filter(Boolean);
     return ["Open a project", ...names].join(" › ");
   }
@@ -458,7 +612,7 @@ export default class Picker extends View {
       .when(on, (el) => el.bg(t.hover))
       .hover((s) => s.bg(t.hover))
       .on_click((_e, cx) => { this.at = i; this.submit(cx); })
-      .child(div().w(48).flex_none().text_size(11).text_color(r.kind === "space" ? t.accent : t.dim).child(BADGES[r.kind] ?? r.kind))
+      .child(div().w(48).flex_none().text_size(11).text_color(r.kind === "space" ? t.accent : t.dim).child(r.badge ?? BADGES[r.kind] ?? (r.kind === "provider_action" ? "do" : r.kind)))
       .child(div().flex_none().max_w(280).truncate().text_color(t.foreground).child(r.label))
       .child(div().flex_1().truncate().text_size(11.5).text_color(t.dim).child(r.detail ?? ""));
   }
@@ -477,19 +631,21 @@ export default class Picker extends View {
     const first = Math.max(0, Math.min(this.at - Math.floor(VISIBLE / 2), this.rows.length - VISIBLE));
     const shown = this.rows.slice(first, first + VISIBLE);
 
-    const body = this.steps
-      ? this.steps.map((s, i) => this.stepView(t, s, i))
-      : shown.map((r, i) => this.rowView(t, r, first + i));
+    const waiting = this.providerTitle && this.providerLoading && !this.rows.length && !this.steps;
+    const body = waiting
+      ? [div().px(14).py(6).text_color(t.dim).child(`Getting ${this.providerTitle.toLowerCase()}…`)]
+      : this.steps
+        ? this.steps.map((s, i) => this.stepView(t, s, i))
+        : shown.map((r, i) => this.rowView(t, r, first + i));
 
-    return v_flex().id("phin-picker").track_focus(this.handle).size_full().min_h(0).p(16).gap(10).bg(t.popover).text_size(13)
+    return v_flex().id("phin-picker").track_focus(this.handle).key_context(KEYS).size_full().min_h(0).p(16).gap(10).bg(t.popover).text_size(13)
+      .on_action(DEEPER, (_e, cx) => { note("key tab"); this.descend(cx); cx.notify(); })
+      .on_action(BACK, (_e, cx) => { note("key back"); this.ascend(cx); cx.notify(); })
       .on_key_down((e, cx) => {
         const n = this.rows.length;
         if (e.key.length > 1 || e.modifiers.control) note(`key ${e.modifiers.control ? "ctrl-" : ""}${e.modifiers.shift ? "shift-" : ""}${e.key}`);
-        if (e.key === "escape") this.ascend(cx);
-        else if (e.key === "down" && n) this.at = (this.at + 1) % n;
+        if (e.key === "down" && n) this.at = (this.at + 1) % n;
         else if (e.key === "up" && n) this.at = (this.at + n - 1) % n;
-        else if (e.key === "tab" && e.modifiers.shift) this.ascend(cx);
-        else if (e.key === "tab") this.descend(cx);
         else if (e.key === "r" && e.modifiers.control) this.refresh(cx);
         else return;
         cx.stop_propagation();

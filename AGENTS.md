@@ -49,7 +49,7 @@ Done when all three pass, in this order:
    and look at it. Use `phin-worktrees` for the branch level, and
    `herdr-app status` for errors.
 
-`target.js`, `rows.js`, `config.js` and `prompts.js` are pure. `lookup.js` and
+`target.js`, `rows.js`, `config.js`, `prompts.js` and `providers.js` are pure. `lookup.js` and
 `actions.js` take the outside world as `io` and `ctx`. Keep new logic in these so
 Node can test it, and keep `main.js` to the UI.
 
@@ -102,6 +102,8 @@ argument.
   screen, with a 15 minute limit and credential prompts turned off.
 - **`fs/promises` reads inside home only.** Glob walks start at the deepest literal
   folder. `readdir` Dirents don't follow symlinks, so `childDirs` checks `<path>/.`.
+- **Tab never reaches `on_key_down`.** The window takes it to move focus. Bind it with
+  `cx.bind_keys` in a `key_context` of your own and handle it with `on_action`.
 - **The text box takes `ctrl+a`,** and likely other editing keys. Offer choices as
   rows, on the tab levels, rather than as ctrl chords.
 - **`task` is a plain argument,** so a leading `-` would read as a flag.

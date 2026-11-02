@@ -44,8 +44,8 @@ list. An open agent's Space shows up as an `open` row like any other.
   config's `agents` found on this machine), and on a pull request in a stack, Whole
   stack. Typing at the action level is a prompt for the agent. `tab`
   on a Start row lists saved prompts.
-- **`shift-tab` and `esc`** go back with the filter intact, or close at the top.
-  `esc` during a job ends it.
+- **`shift-tab`** goes back with the filter intact, or closes at the top.
+- **`esc`** closes the picker, since Herdr takes it for any popup, and ends a running job.
 - **`ctrl-r`** fetches at the branch level.
 - **Pasted text** replaces the list with one row: a GitHub PR, issue or repo URL
   with or without `https://`, `owner/repo`, `owner/repo#42`, or a Linear URL. An
@@ -137,6 +137,17 @@ Otherwise:
 ## Changelog
 
 Newest first. Each version is one that was pushed.
+
+### 0.4.3 (2026-11-02)
+
+- Fixes `tab` and `shift-tab` doing nothing on recent Herdr, which left the picker
+  looking frozen. The window was taking them to move focus.
+- Other mods can add a prefix to the box. A mod registers it under `picker` in its
+  `mod.json`, and the picker lists its rows. See the README.
+- The picker paints its last list straight away and refreshes a second later, keeps
+  your selection through the refresh, and yields while it rebuilds. A prefix shows its
+  last rows at once, then `refreshing…` or `Getting tasks…` while it runs.
+- The docs now say `esc` closes the picker. `shift-tab` is what goes back a level.
 
 ### 0.4.2 (2026-10-31)
 

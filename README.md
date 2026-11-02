@@ -51,7 +51,8 @@ and most recently at the top. A checkout with a Space never appears twice.
 | type | subsequence filter over name and path |
 | `enter` | open the row, with no agent unless `agent.enabled` is set |
 | `tab` | on a repo, its worktrees and branches; on anything else, what to do with it |
-| `shift+tab` / `esc` | back up a level, filter intact |
+| `shift+tab` | back up a level, filter intact |
+| `esc` | close |
 | `ctrl+r` | fetch and refresh, at the branch level |
 
 Paste into the box instead of filtering:
@@ -88,6 +89,24 @@ press `tab` on a Start row to pick a saved prompt.
 Projects and branches have no configured prompt by default. Agent prompts are
 sent as soon as the agent starts. The app has no way to type
 one and leave it unsent.
+
+## Prefixes from other mods
+
+A mod can add a prefix to the box, and the picker lists its rows like its own. It
+registers in its `mod.json`, which the picker reads each time it opens:
+
+```json
+"picker": { "prefix": ">", "title": "Tasks", "rows": ["my-cli", "list", "--json"] }
+```
+
+`rows` runs in the focused folder and prints a JSON array. Each row needs `label` and
+`actions`, and can add `detail`, `tag` (its badge), `args` (shown as its signature) and
+`needs` (`true` when it can't run without arguments). Each action needs `label` and
+`run`, the command to run, and can add `detail` and `input`, a flag that takes what's in
+the box.
+
+Enter runs a row's first action, or lists its actions if it has `needs`. Tab lists them,
+and the box then takes arguments. A mod runs code on your machine, and this is no different.
 
 ## Configuration
 

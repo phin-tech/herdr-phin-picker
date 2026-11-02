@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { actionRows, hasActions, sameList, mergeAgents, orgCompletions, orgPrefix, orgRow, orgRows, parseOrgQuery, promptRows, stackRows, hasExactBranch, linearBaseRows, newBranchRow, parseBranches, parseQuery, parseWorktrees, projectRows, rank, resolveLink, spaceLabel, subsequence, worktreeRows } from "../mods/phin-picker/rows.js";
+import { actionRows, openingKey, openingRows, hasActions, sameList, mergeAgents, orgCompletions, orgPrefix, orgRow, orgRows, parseOrgQuery, promptRows, stackRows, hasExactBranch, linearBaseRows, newBranchRow, parseBranches, parseQuery, parseWorktrees, projectRows, rank, resolveLink, spaceLabel, subsequence, worktreeRows } from "../mods/phin-picker/rows.js";
 import { parse } from "../mods/phin-picker/target.js";
 
 const home = "/home/s";
@@ -30,6 +30,20 @@ test("a remote Space doesn't claim a local path", () => {
   const rows = projectRows({ spaces: [space("a", "vps", { machine: "vps", folder: "/home/s/x" })], panes: [pane("a", "/home/s/x")], paths: ["/home/s/x"], home });
   assert.deepEqual(rows.map((r) => r.kind), ["space", "project"]);
   assert.equal(rows[0].detail, "on vps");
+});
+
+test("opening rows take Spaces from now and everything else from last time", () => {
+  const now = [{ kind: "space", label: "new" }];
+  const saved = [{ kind: "space", label: "closed" }, { kind: "project", label: "p" }, { kind: "org", label: "o" }];
+  assert.deepEqual(openingRows(now, saved).map((r) => r.label), ["new", "p", "o"]);
+});
+
+test("the opening key changes with the paths, the Spaces' folders or the recent list", () => {
+  const key = openingKey(["/a"], [{ path: "/s" }], { "/a": 1 });
+  assert.equal(key, openingKey(["/a"], [{ path: "/s" }], { "/a": 1 }));
+  assert.notEqual(key, openingKey(["/b"], [{ path: "/s" }], { "/a": 1 }));
+  assert.notEqual(key, openingKey(["/a"], [{ path: "/t" }], { "/a": 1 }));
+  assert.notEqual(key, openingKey(["/a"], [{ path: "/s" }], { "/a": 2 }));
 });
 
 test("recent first: Spaces and projects each by score, with the current Space still last", () => {

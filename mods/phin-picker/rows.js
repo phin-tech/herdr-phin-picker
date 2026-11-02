@@ -55,6 +55,13 @@ export function projectRows({ spaces, panes, paths, home, score = () => 0 }) {
   return rows;
 }
 
+// The list to show before anything is read: Spaces as they are now, projects as
+// they were. One opened since may show twice until the real list replaces this.
+export const openingRows = (spaceRows, saved) => [...spaceRows, ...saved.filter((r) => r.kind !== "space")];
+
+// Whether saved rows are still right: they only follow from these three.
+export const openingKey = (paths, spaceRows, recent) => JSON.stringify([paths, spaceRows.map((r) => r.path), recent]);
+
 export const sameList = (a, b) => a.length === b.length && a.every((item, i) => item === b[i]);
 
 export function parseWorktrees(text) {
