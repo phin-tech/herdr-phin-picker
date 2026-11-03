@@ -1,0 +1,15 @@
+# The release tool, app-release (https://git.phin.tech/sam/app-release), pinned to a tag; what it knows about Phin
+# Picker is in release.toml. Keep it on the newest tag, as every project that publishes to apps.phin.tech is: a release
+# redraws the whole page with the app-release it runs. After changing it:
+# `uv lock --upgrade-package app-release --project scripts/release`.
+[project]
+name = "herdr-phin-picker-release"
+version = "0"
+requires-python = ">=3.12"
+dependencies = ["app-release"]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+app-release = { git = "https://git.phin.tech/sam/app-release", tag = "v1.10.0" }

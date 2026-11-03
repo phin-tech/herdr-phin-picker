@@ -1,0 +1,14 @@
+# Read by app-release (https://git.phin.tech/sam/app-release): `just ship patch` bumps the version in every listed
+# mod's mod.json, commits and pushes, zips the mods with keys.json onto the download page (apps.phin.tech, where the
+# Phin Tech Store installs it from) and tags v<version>. install.sh's GitHub release is its own step.
+kind = "herdr-mod"
+app = "Phin Picker"
+slug = "herdr-phin-picker"
+description = "Get to a repo, a branch, a PR or a Linear ticket in one keystroke, in the Herdr app"
+
+[mods]
+names = ["phin-picker", "phin-worktrees"]
+keys = "keys.json"
+
+[downloads]
+source = "https://github.com/phin-tech/herdr-phin-picker"
